@@ -1,18 +1,33 @@
-from requests_futures.sessions import FuturesSession
+try:
+  import google.colab
+  from google.colab import files
+  IN_COLAB = True
+except:
+  IN_COLAB = False
+import os
+import requests
+from requests.exceptions import ConnectionError, Timeout, TooManyRedirects
+import json
+import io
+import pandas as pd
+import numpy as np
+DEV_MODE = False
 
-API_KEY = '29d2d18edb47bd2fb5d27ae36e57fe012dd4bd38b8d0b7f65f1de810b0f33f47'
+from CryptoWallet.Wallet import Wallet
+from CryptoWallet.Loader import BinanceLoader
 
-session = FuturesSession()
-api_url = 'https://min-api.cryptocompare.com/data/v2/histohour'
-api_headers = {
-    "authorization": "Apikey " + API_KEY
-}
-api_parameters = {
-    'fsym': 'ETH',
-    'tsym':'USD',
-    'limit':'1',
-    'toTs':1641314904,
-    'extraParams':'CryptoWallet'
-} 
 
-response = session.get(api_url, headers=api_headers, params=api_parameters)
+wallet = Wallet()
+
+if IN_COLAB:
+    files = files.upload()
+else:
+    files = [r"C:\Users\conta\SynologyDrive\Documents\Crypto\Transactions\binance1_2021-03-01 - 2021-10-31.csv", 
+             r"C:\Users\conta\SynologyDrive\Documents\Crypto\Transactions\binance1_2021-11-01 - 2022-10-20.csv",
+             r"C:\Users\conta\SynologyDrive\Documents\Crypto\Transactions\binance2_2021-01-01 - 2021-12-31.csv",
+             r"C:\Users\conta\SynologyDrive\Documents\Crypto\Transactions\binance2_2022-01-01 - 2022-10-25.csv"]
+
+for file in files:
+    wallet.addTransactions(BinanceLoader.load(file))
+    
+wallet.save("data/transactions.csv")
