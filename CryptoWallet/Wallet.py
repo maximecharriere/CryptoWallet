@@ -27,6 +27,7 @@ class Wallet(object):
             'type' : lambda s: TransactionType[s],
             'wallet' : lambda s: WalletType[s]
         })
+        self.printFirstLastTransactionDatetime()
         
     def save(self, filename:str):
         self.transactions.to_csv(filename, index=False)
@@ -67,5 +68,15 @@ class Wallet(object):
 
     def getStakingWalletBalance(self):
         return self.transactions[(self.transactions['wallet'] == WalletType.STAKING)].groupby("asset")[['ammount', 'ammount_USD']].sum()
+    
+    def printFirstLastTransactionDatetime(self):
+        # Group by 'exchange' and aggregate with min and max on 'datetime'
+        grouped = self.transactions.groupby('exchange')['datetime'].agg(['min', 'max'])
+        # Iterate through the grouped data and print results
+        for exchange, row in grouped.iterrows():
+            print(f"Exchange: {exchange}")
+            print(f"  First Transaction: {row['min']}")
+            print(f"  Last Transaction: {row['max']}")
+            print()  # Blank line for readability
         
 

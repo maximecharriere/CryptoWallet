@@ -11,7 +11,9 @@ class BinanceLoader:
         'Sell' : TransactionType.SPOT_TRADE,
         'Transaction Related' : TransactionType.SPOT_TRADE,
         'Small assets exchange BNB' : TransactionType.SPOT_TRADE,
+        'Small Assets Exchange BNB' : TransactionType.SPOT_TRADE,
         'Fee' : TransactionType.FEE,
+        'Transaction Fee' : TransactionType.FEE,
         'Simple Earn Flexible Interest' : TransactionType.SAVING_INTEREST,
         'Simple Earn Flexible Subscription' : TransactionType.SAVING_PURCHASE,
         'Simple Earn Flexible Redemption' : TransactionType.SAVING_REDEMPTION,
@@ -37,16 +39,19 @@ class BinanceLoader:
         inTransactions = pd.read_csv(filepath_or_buffer)
         transactions = []
         for idx, row in inTransactions.iterrows():
-            transactions.append(Transaction(
-                datetime=datetime.fromisoformat(row['UTC_Time']),
-                asset=row['Coin'],
-                ammount=row['Change'],
-                type=cls.TransactionTypesMap[row['Operation']],
-                exchange=cls.name,
-                userId=row['User_ID'],
-                wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
-                note=row['Operation'] + ('' if row.isna()['Remark']  else (', ' + str(row['Remark'])))
-            ))
+            try:
+                transactions.append(Transaction(
+                    datetime=datetime.fromisoformat(row['UTC_Time']),
+                    asset=row['Coin'],
+                    ammount=row['Change'],
+                    type=cls.TransactionTypesMap[row['Operation']],
+                    exchange=cls.name,
+                    userId=row['User_ID'],
+                    wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
+                    note=row['Operation'] + ('' if row.isna()['Remark']  else (', ' + str(row['Remark'])))
+                ))
+            except KeyError as e:
+                raise KeyError(f"The transaction type {e} is not supported by the loader")
             
             # Coins in the Saving wallet are prefixed by LD. Put them in the saving wallet and remove the prefix.
             if(transactions[-1].type in {TransactionType.SAVING_PURCHASE, TransactionType.SAVING_REDEMPTION}
