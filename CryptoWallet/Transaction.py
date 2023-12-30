@@ -25,6 +25,7 @@ class TransactionType(MyEnum):
     STOLEN = "Stolen"
     SPEND = "Spend"
     INCOME = "Income"
+    REDENOMINATION = "Redenomination"
 
 class WalletType(MyEnum):
     SPOT = "Spot"
