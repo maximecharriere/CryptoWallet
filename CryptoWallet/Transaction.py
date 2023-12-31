@@ -7,6 +7,9 @@ class MyEnum(Enum):
     def __str__(self):
         return self.name
     
+    def __lt__(self, other):
+        return self.name < other.name
+    
 class TransactionType(MyEnum):
     SPOT_TRADE = "Spot trade"
     STAKING_PURCHASE = "Staking purchase"
@@ -17,8 +20,8 @@ class TransactionType(MyEnum):
     SAVING_INTEREST = "Saving interest"
     DISTRIBUTION = "Distribution"
     DEPOSIT = "Deposit"
-    FEE = "Fee"
     WITHDRAW = "Withdraw"
+    FEE = "Fee"
     REFERRAL_INTEREST = "Referral interest"
     MINING_INTEREST = "Mining interest"
     LOST = "Lost"
