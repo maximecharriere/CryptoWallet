@@ -80,7 +80,7 @@ class Wallet(object):
                 with open('log/apiFailedReply.json', 'w') as logfile:
                     json.dump(failedReplies, logfile, indent=4)
                 self.transactions.loc[self.transactions['price_USD'].isna(), "price_USD"] = prices
-                self.transactions["ammount_USD"] = self.transactions["ammount"] * self.transactions["price_USD"]
+                self.transactions["amount_USD"] = self.transactions["ammount"] * self.transactions["price_USD"]
             
 
     def getAmmountTot(self):
@@ -91,7 +91,7 @@ class Wallet(object):
         TransactionType.SPOT_TRADE, TransactionType.STAKING_PURCHASE, TransactionType.STAKING_REDEMPTION, TransactionType.SAVING_PURCHASE, 
         TransactionType.SAVING_REDEMPTION,TransactionType.DEPOSIT, TransactionType.WITHDRAW, TransactionType.SPEND, TransactionType.INCOME, TransactionType.REDENOMINATION]))]
 
-        return transactions.groupby(["asset"])['ammount_USD'].sum().rename("cost_USD")
+        return transactions.groupby(["asset"])['amount_USD'].sum().rename("cost_USD")
     
     def getAssetsList(self):
         return self.transactions['asset'].unique()
@@ -134,14 +134,14 @@ class Wallet(object):
         return revenue
 
     def getFeesTot(self):
-        feesTot = self.transactions[(self.transactions['type'] == TransactionType.FEE)].groupby("asset")[['ammount', 'ammount_USD']].sum()
+        feesTot = self.transactions[(self.transactions['type'] == TransactionType.FEE)].groupby("asset")[['ammount', 'amount_USD']].sum()
         feesTot.columns = ['fees_ammount', 'fees_USD']
         feesTot['fees_current_USD'] = feesTot['fees_ammount'] * self.getCurrentPrices()
         return feesTot
     
     def getInterestsTot(self):
         interestsTot = self.transactions[(self.transactions['type'].isin([TransactionType.STAKING_INTEREST, TransactionType.SAVING_INTEREST, 
-                                                                  TransactionType.REFERRAL_INTEREST, TransactionType.DISTRIBUTION]))].groupby("asset")[['ammount', 'ammount_USD']].sum()
+                                                                  TransactionType.REFERRAL_INTEREST, TransactionType.DISTRIBUTION]))].groupby("asset")[['ammount', 'amount_USD']].sum()
         interestsTot.columns = ['interests_ammount', 'interests_USD']
         interestsTot['interests_current_USD'] = interestsTot['interests_ammount'] * self.getCurrentPrices()
         return interestsTot
@@ -183,11 +183,11 @@ class Wallet(object):
         condition1 = ~self.transactions['asset'].isin(excluded_assets)
 
         # Condition 2: Include only certain transaction types
-        included_types = [TransactionType.WITHDRAW, TransactionType.SPOT_TRADE, TransactionType.DEPOSIT]
+        included_types = [TransactionType.SPOT_TRADE]
         condition2 = self.transactions['type'].isin(included_types)
 
         # Condition 3: Exclude transactions with amount_USD between -10 and 10
-        condition3 = ~self.transactions['ammount_USD'].between(-10, 10)
+        condition3 = ~self.transactions['amount_USD'].between(-10, 10)
 
         # Apply all conditions to filter the DataFrame
         transactionsToPlot = self.transactions[condition1 & condition2 & condition3]
@@ -199,5 +199,5 @@ class Wallet(object):
             file.writelines(f"\narray<float> prices = array.from({', '.join(transactionsToPlot['price_USD'].astype(str))})")
             # file.writelines(f"\narray<bool> buyOrders = array.from({', '.join((transactionsToPlot['ammount']>0).astype(str).str.lower())})")
             file.writelines('\narray<string> assets = array.from({})'.format(', '.join('"{}"'.format(item) for item in transactionsToPlot['asset'])))
-            file.writelines(f"\narray<float> ammount = array.from({', '.join(transactionsToPlot['ammount_USD'].astype(str))})")
+            file.writelines(f"\narray<float> ammount = array.from({', '.join(transactionsToPlot['amount_USD'].astype(str))})")
 

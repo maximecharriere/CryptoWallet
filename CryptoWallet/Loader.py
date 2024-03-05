@@ -40,7 +40,6 @@ class BinanceLoader:
         'Token Swap - Redenomination/Rebranding' : TransactionType.REDENOMINATION
     }
     CryptoNameMap = {
-        'IOTA' : 'MIOTA',
         'SHIB2': 'SHIB'
     }        
     

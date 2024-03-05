@@ -46,4 +46,4 @@ class Transaction(object):
     wallet: WalletType
     note: str = ""
     price_USD : float = np.nan
-    ammount_USD: float = np.nan
+    amount_USD: float = np.nan
