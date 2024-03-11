@@ -30,6 +30,7 @@ class BinanceLoader:
         'Staking Redemption' : TransactionType.STAKING_REDEMPTION,
         'ETH 2.0 Staking' : TransactionType.STAKING_PURCHASE,
         'ETH 2.0 Staking Rewards' : TransactionType.STAKING_INTEREST,
+        'ETH 2.0 Staking Withdrawals' : TransactionType.STAKING_REDEMPTION,
         'Distribution' : TransactionType.DISTRIBUTION,
         'Airdrop Assets' : TransactionType.DISTRIBUTION,
         'Cash Voucher distribution' : TransactionType.DISTRIBUTION,
@@ -37,7 +38,9 @@ class BinanceLoader:
         'Commission Fee Shared With You' : TransactionType.REFERRAL_INTEREST,
         'Referral Commission' : TransactionType.REFERRAL_INTEREST,
         'Referral Kickback' : TransactionType.REFERRAL_INTEREST,
-        'Token Swap - Redenomination/Rebranding' : TransactionType.REDENOMINATION
+        'Token Swap - Redenomination/Rebranding' : TransactionType.REDENOMINATION,
+        'Crypto Box' : TransactionType.DISTRIBUTION,
+        'Binance Convert' : TransactionType.SPOT_TRADE
     }
     CryptoNameMap = {
         'SHIB2': 'SHIB'
@@ -45,6 +48,7 @@ class BinanceLoader:
     
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
+        print(f"Loading transactions from {filepath_or_buffer} file")
         inTransactions = pd.read_csv(filepath_or_buffer)
         transactions = []
         exceptions_occurred = False
@@ -53,7 +57,7 @@ class BinanceLoader:
                 transactions.append(Transaction(
                     datetime=datetime.fromisoformat(row['UTC_Time']),
                     asset=row['Coin'],
-                    ammount=row['Change'],
+                    amount=row['Change'],
                     type=cls.TransactionTypesMap[row['Operation']],
                     exchange=cls.name,
                     userId=row['User_ID'],
@@ -79,20 +83,20 @@ class BinanceLoader:
             if(transactions[-1].type in {TransactionType.SAVING_PURCHASE, TransactionType.SAVING_REDEMPTION}):           
                 transactions.append(dataclasses.replace(transactions[-1], 
                     wallet=WalletType.SAVING, 
-                    ammount=-transactions[-1].ammount, 
+                    amount=-transactions[-1].amount, 
                     note=transactions[-1].note + ', Transaction not from Binance'))
             
             # In binance the STAKING wallet does not belong to the user. 
             # So during a staking purchase or redemption, there is a transaction telling the in/out flow of the SPOT wallet, 
             # but it does not say the in/out flow of the STAKING wallet. 
             # This transaction is therefore added by this program. 
-            # Therefor Binance store the ETH 2.0 Staking in the SPOT wallet with the BETH coin. Don't create a new transaction
+            # However Binance store the ETH 2.0 Staking in the SPOT wallet with the BETH coin. Don't create a new transaction
             # for ETH 2.0 Staking transactions
             if(transactions[-1].type in {TransactionType.STAKING_PURCHASE, TransactionType.STAKING_REDEMPTION}
-            and row['Operation'] != 'ETH 2.0 Staking'):           
+            and row['Operation'] not in {'ETH 2.0 Staking', 'ETH 2.0 Staking Withdrawals'}):           
                 transactions.append(dataclasses.replace(transactions[-1], 
                     wallet=WalletType.STAKING, 
-                    ammount=-transactions[-1].ammount, 
+                    amount=-transactions[-1].amount, 
                     note=transactions[-1].note + ', Transaction not from Binance'))
         
         transactions_df = pd.DataFrame(transactions)
