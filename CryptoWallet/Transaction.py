@@ -39,7 +39,7 @@ class WalletType(MyEnum):
 class Transaction(object):
     datetime: datetime
     asset: str
-    ammount: float
+    amount: float
     type: TransactionType
     exchange: str
     userId: str
