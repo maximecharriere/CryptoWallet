@@ -49,6 +49,9 @@ class BinanceLoader:
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
         print(f"Loading transactions from {filepath_or_buffer} file")
+        # Check that the file is a csv file
+        if(not filepath_or_buffer.endswith('.csv')):
+            raise Exception(f"The file {filepath_or_buffer} is not a csv file")
         inTransactions = pd.read_csv(filepath_or_buffer)
         transactions = []
         exceptions_occurred = False
@@ -101,6 +104,66 @@ class BinanceLoader:
         
         transactions_df = pd.DataFrame(transactions)
         transactions_df['asset'] = transactions_df['asset'].map(lambda s: cls.CryptoNameMap[s] if s in cls.CryptoNameMap else s)
+
+        if exceptions_occurred:
+            raise Exception("Exceptions occurred during the loading of the transactions. See the logs for more details.")
+        
+        return transactions_df
+      
+      
+      
+      
+      
+class SwissborgLoader:
+    name = 'Swissborg'
+    TransactionTypesMap = {
+        'Deposit' : TransactionType.DEPOSIT,
+        'Withdraw' : TransactionType.WITHDRAW,
+        'Buy' : TransactionType.SPOT_TRADE,
+        'Sell' : TransactionType.SPOT_TRADE,
+        'Payouts' : TransactionType.STAKING_INTEREST
+    }     
+    
+    @classmethod
+    def load(cls, filepath_or_buffer) -> pd.DataFrame:
+        print(f"Loading transactions from {filepath_or_buffer} file")
+        # Check that the file is a xlsx file
+        if(not filepath_or_buffer.endswith('.xlsx')):
+            raise Exception(f"The file {filepath_or_buffer} is not a xlsx file")
+          
+        inTransactions = pd.read_excel(filepath_or_buffer, header=13, usecols='A:K')
+        # The user id is in the cell 6E row of the file
+        userId = pd.read_excel(filepath_or_buffer, usecols="E", skiprows=5, nrows=1).iat[0, 0]
+        
+        transactions = []
+        exceptions_occurred = False
+        for idx, row in inTransactions.iterrows():
+            try:
+                transactions.append(Transaction(
+                    datetime=datetime.fromisoformat(row['Time in UTC']),
+                    asset=row['Currency'],
+                    amount=row['Gross amount'],
+                    type=cls.TransactionTypesMap[row['Type']],
+                    exchange=cls.name,
+                    userId=userId,
+                    wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
+                    note=f"Note={row['Note']}",
+                    price_USD=row['Gross amount (USD)']/row['Gross amount'],
+                    amount_USD=row['Gross amount (USD)']
+                ))
+                # If the transaction fee is not 0, add a new transaction for the fee
+                if(row['Fee'] != 0):
+                    transactions.append(dataclasses.replace(transactions[-1], 
+                        amount=row['Fee'], 
+                        type=TransactionType.FEE, 
+                        note=transactions[-1].note + ', Fee',
+                        amount_USD=row['Fee (USD)']))
+                
+            except KeyError as e:
+                print(f"The transaction type {e} is not supported by the loader")
+                exceptions_occurred = True
+            
+        transactions_df = pd.DataFrame(transactions)
 
         if exceptions_occurred:
             raise Exception("Exceptions occurred during the loading of the transactions. See the logs for more details.")
