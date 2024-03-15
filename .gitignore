@@ -2,4 +2,5 @@ data/**
 venv/**
 .env
 **/__pycache__/**
-log
+log/**
+ExportedTransactions/**

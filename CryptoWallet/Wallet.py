@@ -28,12 +28,14 @@ def responseHandling_hook(r, *args, **kwargs):
     return r
 
 class Wallet(object):
-    def __init__(self, apiKey = None, transactionsFilepath = None):
+    def __init__(self, apiKey = None, databaseFilename = None):
         self.apiKey = apiKey
-        if transactionsFilepath is None:
-            self.transactions = pd.DataFrame()
+        self.databaseFilename = databaseFilename if databaseFilename is not None else "data/transactions.csv"
+        if os.path.exists(self.databaseFilename):
+            self.open(self.databaseFilename)
         else:
-            self.open(transactionsFilepath)
+            self.transactions = pd.DataFrame()
+
         
     def open(self, filepath_or_buffer):
         self.transactions = pd.read_csv(filepath_or_buffer, parse_dates=['datetime'], converters={
@@ -42,7 +44,28 @@ class Wallet(object):
         })
         self.printFirstLastTransactionDatetime()
         
-    def save(self, filename:str):
+    def save(self, filename=None):
+        # If no filename is provided, save to the original file
+        filename = filename if filename is not None else self.databaseFilename
+        # Backup the original file by doing a copy of it to the "backup/Ymd_HM" folder
+        if os.path.exists(filename):
+            # Get the directory of the current file and the base filename
+            file_dir = os.path.dirname(filename)
+            base_filename = os.path.basename(filename)
+            
+            # Prepare the backup folder path
+            backup_folder = os.path.join(file_dir, "backup", time.strftime("%Y%m%d_%H%M"))
+            os.makedirs(backup_folder, exist_ok=True)
+            
+            # Create the backup file path
+            backup_path = os.path.join(backup_folder, base_filename)
+            
+            # Copy the file to the backup location
+            # Use shutil.copy2 to preserve metadata, or shutil.copy if metadata is not important
+            import shutil
+            shutil.copy2(filename, backup_path)
+            
+        # After backup, save the transactions to the original file
         self.transactions.to_csv(filename, index=False)
           
     def addTransactions(self, transactions, mergeSimilar = True, removeExisting = True, addMissingUsd = True):
@@ -50,15 +73,16 @@ class Wallet(object):
             transactions = self.mergeTransactionsInWindow(transactions)
         if removeExisting:
             # Remove transactions that are already in the wallet transactions. For each unique group of "exchange" and "userId", keep the transaction that have a datetime ouside the range between the earliest and latest datetime of the group.
-
             for (exchange, userId), group in transactions.groupby(['exchange', 'userId']):
-                existingGroupTransactions = self.transactions[(self.transactions['exchange'] == exchange) & (self.transactions['userId'] == userId)]
-                if not existingGroupTransactions.empty:
-                    (earliest, latest) = existingGroupTransactions["datetime"].agg(['min', 'max'])
-                    mask = (group['datetime'] >= earliest) & (group['datetime'] <= latest)
-                    if mask.any():
-                        print(f"Removing {mask.sum()}/{len(group)} transactions from {exchange} {userId} already existing in the wallet.")
-                    transactions = transactions[~mask]
+                # Test if there is already transactions in the wallet for the same exchange and userId
+                if 'exchange' in self.transactions.columns and 'userId' in self.transactions.columns:
+                    existingGroupTransactions = self.transactions[(self.transactions['exchange'] == exchange) & (self.transactions['userId'] == userId)]
+                    if not existingGroupTransactions.empty:
+                        (earliest, latest) = existingGroupTransactions["datetime"].agg(['min', 'max'])
+                        mask = (group['datetime'] >= earliest) & (group['datetime'] <= latest)
+                        if mask.any():
+                            print(f"Removing {mask.sum()}/{len(group)} transactions from {exchange} {userId} already existing in the wallet.")
+                        transactions = transactions[~mask]
         if addMissingUsd:
             if self.apiKey is None:
                 print("No API key provided, no USD values is added")

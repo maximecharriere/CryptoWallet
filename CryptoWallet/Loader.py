@@ -133,7 +133,7 @@ class SwissborgLoader:
           
         inTransactions = pd.read_excel(filepath_or_buffer, header=13, usecols='A:K')
         # The user id is in the cell 6E row of the file
-        userId = pd.read_excel(filepath_or_buffer, usecols="E", skiprows=5, nrows=1).iat[0, 0]
+        userId = pd.read_excel(filepath_or_buffer, usecols="E", skiprows=4, nrows=1).iat[0, 0]
         
         transactions = []
         exceptions_occurred = False
@@ -147,7 +147,7 @@ class SwissborgLoader:
                     exchange=cls.name,
                     userId=userId,
                     wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
-                    note=f"Note={row['Note']}",
+                    note=f"Type={row['Type']}" + ('' if row.isna()['Note']  else (f", Note={str(row['Note'])}")),
                     price_USD=row['Gross amount (USD)']/row['Gross amount'],
                     amount_USD=row['Gross amount (USD)']
                 ))
