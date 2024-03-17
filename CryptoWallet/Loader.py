@@ -64,7 +64,7 @@ class BinanceLoader:
                     amount=row['Change'],
                     type=cls.TransactionTypesMap[row['Operation']],
                     exchange=cls.name,
-                    userId=row['User_ID'],
+                    userId=str(row['User_ID']),
                     wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
                     note=f"Operation={row['Operation']}" + ('' if row.isna()['Remark']  else (f", Remark={str(row['Remark'])}"))
                 ))
@@ -124,6 +124,7 @@ class SwissborgLoader:
         'Sell' : TransactionType.SPOT_TRADE,
         'Payouts' : TransactionType.STAKING_INTEREST
     }     
+    NegativeTransactionTypes = {'Withdraw', 'Sell'}
     
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
@@ -143,14 +144,14 @@ class SwissborgLoader:
                 transactions.append(Transaction(
                     datetime=datetime.fromisoformat(row['Time in UTC']).replace(tzinfo=timezone.utc),
                     asset=row['Currency'],
-                    amount=row['Gross amount'],
+                    amount=-row['Gross amount'] if row['Type'] in cls.NegativeTransactionTypes else row['Gross amount'],
                     type=cls.TransactionTypesMap[row['Type']],
                     exchange=cls.name,
                     userId=userId,
                     wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
                     note=f"Type={row['Type']}" + ('' if row.isna()['Note']  else (f", Note={str(row['Note'])}")),
                     price_USD=row['Gross amount (USD)']/row['Gross amount'],
-                    amount_USD=row['Gross amount (USD)']
+                    amount_USD=-row['Gross amount (USD)'] if row['Type'] in cls.NegativeTransactionTypes else row['Gross amount (USD)'],
                 ))
                 # If the transaction fee is not 0, add a new transaction for the fee
                 if(row['Fee'] != 0):
@@ -275,7 +276,7 @@ class KucoinLoader:
                 transactions.append(Transaction(
                     datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
                     asset=row['Coin'],
-                    amount=row['Amount'],
+                    amount=-row['Amount'],
                     type=TransactionType.WITHDRAW,
                     exchange=cls.name,
                     userId=row['UID'],
