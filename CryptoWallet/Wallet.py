@@ -30,28 +30,32 @@ def responseHandling_hook(r, *args, **kwargs):
 class Wallet(object):
     def __init__(self, apiKey = None, databaseFilename = None):
         self.apiKey = apiKey
-        self.databaseFilename = databaseFilename if databaseFilename is not None else "data/transactions.csv"
-        if os.path.exists(self.databaseFilename):
+        self.databaseFilename = databaseFilename
+        if self.databaseFilename is not None and os.path.exists(self.databaseFilename):
             self.open(self.databaseFilename)
         else:
             self.transactions = pd.DataFrame()
 
         
     def open(self, filepath_or_buffer):
-        self.transactions = pd.read_csv(filepath_or_buffer, parse_dates=['datetime'], converters={
+        self.transactions = pd.read_csv(filepath_or_buffer, parse_dates=['datetime'], date_format='ISO8601', converters={
             'type' : lambda s: TransactionType[s],
             'wallet' : lambda s: WalletType[s]
         })
         self.printFirstLastTransactionDatetime()
         
-    def save(self, filename=None):
+    def save(self, filepath=None):
         # If no filename is provided, save to the original file
-        filename = filename if filename is not None else self.databaseFilename
+        filepath = filepath if filepath is not None else self.databaseFilename
+
+        if filepath is None:
+            raise ValueError("No filename provided and no original databaseFilename set")
+        
         # Backup the original file by doing a copy of it to the "backup/Ymd_HM" folder
-        if os.path.exists(filename):
+        if os.path.exists(filepath):
             # Get the directory of the current file and the base filename
-            file_dir = os.path.dirname(filename)
-            base_filename = os.path.basename(filename)
+            file_dir = os.path.dirname(filepath)
+            base_filename = os.path.basename(filepath)
             
             # Prepare the backup folder path
             backup_folder = os.path.join(file_dir, "backup", time.strftime("%Y%m%d_%H%M"))
@@ -63,10 +67,10 @@ class Wallet(object):
             # Copy the file to the backup location
             # Use shutil.copy2 to preserve metadata, or shutil.copy if metadata is not important
             import shutil
-            shutil.copy2(filename, backup_path)
+            shutil.copy2(filepath, backup_path)
             
         # After backup, save the transactions to the original file
-        self.transactions.to_csv(filename, index=False)
+        self.transactions.to_csv(filepath, index=False)
           
     def addTransactions(self, transactions, mergeSimilar = True, removeExisting = True, addMissingUsd = True):
         if mergeSimilar:

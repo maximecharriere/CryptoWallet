@@ -1,7 +1,8 @@
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from .Transaction import Transaction, TransactionType, WalletType
 import dataclasses
+import os
 
 class BinanceLoader:
     name = 'Binance'
@@ -58,7 +59,7 @@ class BinanceLoader:
         for idx, row in inTransactions.iterrows():
             try:
                 transactions.append(Transaction(
-                    datetime=datetime.fromisoformat(row['UTC_Time']),
+                    datetime=datetime.fromisoformat(row['UTC_Time']).replace(tzinfo=timezone.utc),
                     asset=row['Coin'],
                     amount=row['Change'],
                     type=cls.TransactionTypesMap[row['Operation']],
@@ -140,7 +141,7 @@ class SwissborgLoader:
         for idx, row in inTransactions.iterrows():
             try:
                 transactions.append(Transaction(
-                    datetime=datetime.fromisoformat(row['Time in UTC']),
+                    datetime=datetime.fromisoformat(row['Time in UTC']).replace(tzinfo=timezone.utc),
                     asset=row['Currency'],
                     amount=row['Gross amount'],
                     type=cls.TransactionTypesMap[row['Type']],
@@ -169,3 +170,241 @@ class SwissborgLoader:
             raise Exception("Exceptions occurred during the loading of the transactions. See the logs for more details.")
         
         return transactions_df
+    
+
+
+class KucoinLoader:
+    name = 'Kucoin'  
+    
+    @classmethod
+    def load(cls, folderpath) -> pd.DataFrame:
+        print(f"Loading transactions from {folderpath} folder")
+        # Check that the folderpath is a folder
+        if not os.path.isdir(folderpath):
+            raise Exception(f"The path {folderpath} is not a folder. Kucoin store multiple CSV files in a folder")
+         
+        csv_files = [file for file in os.listdir(folderpath) if file.endswith('.csv')]
+        transactions = []
+        for file in csv_files:
+            filepath = os.path.join(folderpath, file)
+
+            if file.startswith("Deposit_Withdrawal History_Deposit History"):
+                transactions.extend(cls.load_deposit(filepath))
+            elif file.startswith("Deposit_Withdrawal History_Withdrawal Record"):
+                transactions.extend(cls.load_withdrawal(filepath))
+            elif file.startswith("Spot Orders_Filled Orders (Show Order-Splitting)"):
+                pass
+            elif file.startswith("Spot Orders_Filled Orders"):
+                transactions.extend(cls.load_spot_orders(filepath))
+            elif file.startswith("Account History_Funding Account"):
+                transactions.extend(cls.load_funding_account(filepath))
+            elif file.startswith("Others_Asset Snapshots"):
+                pass
+            else:
+                # Load the file and check that it is empty. If not, raise an exception
+                df = pd.read_csv(filepath)
+                if not df.empty:
+                    raise Exception(f"The file '{file}' is not supported by the loader and is not empty.")
+                
+        transactions_df = pd.DataFrame(transactions)
+                
+        return transactions_df  
+        
+    @classmethod
+    def load_deposit(cls, filepath) -> list[Transaction]:
+        inTransactions = pd.read_csv(filepath)
+        transactions = []
+        exceptions_occurred = False
+
+        # Get the name of the column which has the format 'Time(UTC+02:00)'
+        time_column_name = [col for col in inTransactions.columns if 'Time(UTC' in col][0]
+
+        # Extract the sign, hours, and minutes from the timezone string
+        sign = time_column_name[8]
+        hours = int(time_column_name[9:11])
+        minutes = int(time_column_name[12:14])
+        # Calculate the total offset in minutes
+        timezone_offset_minutes = (hours * 60 + minutes) * (-1 if sign == '-' else 1)
+
+        for idx, row in inTransactions.iterrows():
+            try:
+                transactions.append(Transaction(
+                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
+                    asset=row['Coin'],
+                    amount=row['Amount'],
+                    type=TransactionType.DEPOSIT,
+                    exchange=cls.name,
+                    userId=row['UID'],
+                    wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
+                    note=f"Remarks={row['Remarks']}"
+                ))
+                # If the transaction fee is not 0, add a new transaction for the fee
+                if(row['Fee'] != 0):
+                    transactions.append(dataclasses.replace(transactions[-1], 
+                        amount=row['Fee'], 
+                        type=TransactionType.FEE, 
+                        note=transactions[-1].note + ', Fee'))
+                
+            except KeyError as e:
+                print(f"The transaction type {e} is not supported by the loader")
+                exceptions_occurred = True
+            
+        if exceptions_occurred:
+            raise Exception("Exceptions occurred during the loading of the transactions. See the logs for more details.")
+        
+        return transactions
+    
+    @classmethod
+    def load_withdrawal(cls, filepath) -> list[Transaction]:
+        inTransactions = pd.read_csv(filepath)
+        transactions = []
+        exceptions_occurred = False
+
+        # Get the name of the column which has the format 'Time(UTC+02:00)'
+        time_column_name = [col for col in inTransactions.columns if 'Time(UTC' in col][0]
+
+        # Extract the sign, hours, and minutes from the timezone string
+        sign = time_column_name[8]
+        hours = int(time_column_name[9:11])
+        minutes = int(time_column_name[12:14])
+        # Calculate the total offset in minutes
+        timezone_offset_minutes = (hours * 60 + minutes) * (-1 if sign == '-' else 1)
+
+        for idx, row in inTransactions.iterrows():
+            try:
+                transactions.append(Transaction(
+                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
+                    asset=row['Coin'],
+                    amount=row['Amount'],
+                    type=TransactionType.WITHDRAW,
+                    exchange=cls.name,
+                    userId=row['UID'],
+                    wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
+                    note=f"Remarks={row['Remarks']}"
+                ))
+                # If the transaction fee is not 0, add a new transaction for the fee
+                if(row['Fee'] != 0):
+                    transactions.append(dataclasses.replace(transactions[-1], 
+                        amount=row['Fee'], 
+                        type=TransactionType.FEE, 
+                        note=transactions[-1].note + ', Fee'))
+                
+            except KeyError as e:
+                print(f"The transaction type {e} is not supported by the loader")
+                exceptions_occurred = True
+            
+        if exceptions_occurred:
+            raise Exception("Exceptions occurred during the loading of the transactions. See the logs for more details.")
+        
+        return transactions
+    
+    @classmethod
+    def load_spot_orders(cls, filepath) -> list[Transaction]:
+        inTransactions = pd.read_csv(filepath)
+        transactions = []
+        exceptions_occurred = False
+
+        # Get the name of the column which has the format 'Filled Time(UTC+02:00)'
+        time_column_name = [col for col in inTransactions.columns if 'Filled Time(UTC' in col][0]
+
+        # Extract the sign, hours, and minutes from the timezone string
+        sign = time_column_name[15]
+        hours = int(time_column_name[16:18])
+        minutes = int(time_column_name[19:21])
+        # Calculate the total offset in minutes
+        timezone_offset_minutes = (hours * 60 + minutes) * (-1 if sign == '-' else 1)
+
+        for idx, row in inTransactions.iterrows():
+            try:
+                # The trading pair is in the format 'BTC-USDT' in the column 'Symbol'. Slit it to get the two assets
+                asset1, asset2 = row['Symbol'].split('-')
+                # Only SELL and BUY transactions are supported
+                if row['Side'] not in {'SELL', 'BUY'}:
+                    raise KeyError(row['Side'])
+                # Add transaction for the first asset
+                transactions.append(Transaction(
+                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
+                    asset=asset1,
+                    amount=row['Filled Amount'] if row['Side'] == 'BUY' else -row['Filled Amount'],
+                    type=TransactionType.SPOT_TRADE,
+                    exchange=cls.name,
+                    userId=row['UID'],
+                    wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
+                    note=f"Symbol={row['Symbol']}, Side={row['Side']}",
+                    price_USD=row['Filled Volume (USDT)']/row['Filled Amount'],
+                    amount_USD=row['Filled Volume (USDT)'] if row['Side'] == 'BUY' else -row['Filled Volume (USDT)']
+                ))
+                # Add transaction for the second asset
+                transactions.append(dataclasses.replace(transactions[-1], 
+                    asset=asset2,
+                    amount=row['Filled Volume'] if row['Side'] == 'SELL' else -row['Filled Volume'],
+                    price_USD=row['Filled Volume (USDT)']/row['Filled Volume'],
+                    amount_USD=row['Filled Volume (USDT)'] if row['Side'] == 'SELL' else -row['Filled Volume (USDT)']
+                ))
+                # If the transaction fee is not 0, add a new transaction for the fee
+                if(row['Fee'] != 0):
+                    transactions.append(dataclasses.replace(transactions[-1], 
+                        asset=row['Fee Currency'],
+                        amount=row['Fee'], 
+                        type=TransactionType.FEE, 
+                        note=transactions[-1].note + ', Fee',
+                        price_USD=None,
+                        amount_USD=None
+                    ))
+                
+            except KeyError as e:
+                print(f"The transaction type {e} is not supported by the loader")
+                exceptions_occurred = True
+            
+        if exceptions_occurred:
+            raise Exception("Exceptions occurred during the loading of the transactions. See the logs for more details.")
+        
+        return transactions
+    
+    @classmethod
+    def load_funding_account(cls, filepath) -> list[Transaction]:
+        inTransactions = pd.read_csv(filepath)
+        transactions = []
+        exceptions_occurred = False
+
+        # Get the name of the column which has the format 'Time(UTC+02:00)'
+        time_column_name = [col for col in inTransactions.columns if 'Time(UTC' in col][0]
+
+        # Extract the sign, hours, and minutes from the timezone string
+        sign = time_column_name[8]
+        hours = int(time_column_name[9:11])
+        minutes = int(time_column_name[12:14])
+        # Calculate the total offset in minutes
+        timezone_offset_minutes = (hours * 60 + minutes) * (-1 if sign == '-' else 1)
+
+        for idx, row in inTransactions.iterrows():
+            try:
+                # Only DISTRIBUTION transactions are supported
+                if not 'BONUS' in row['Remark'].upper():
+                    raise KeyError('Funding Account')
+                transactions.append(Transaction(
+                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
+                    asset=row['Currency'],
+                    amount=row['Amount'],
+                    # the type of the transaction is TransactionType.DISTRIBUTION if the Remark include the word BONUS, bonus or Bonus
+                    type=TransactionType.DISTRIBUTION,
+                    exchange=cls.name,
+                    userId=row['UID'],
+                    wallet=WalletType.SPOT, # Default transaction are done with the Spot wallet
+                    note=f"Side={row['Side']}" + ('' if row.isna()['Remark']  else (f", Remark={str(row['Remark'])}"))
+                ))
+                # If the transaction fee is not 0, add a new transaction for the fee
+                if(row['Fee'] != 0):
+                    transactions.append(dataclasses.replace(transactions[-1], 
+                        amount=row['Fee'], 
+                        type=TransactionType.FEE, 
+                        note=transactions[-1].note + ', Fee'))
+                
+            except KeyError as e:
+                print(f"The transaction type {e} is not supported by the loader")
+                exceptions_occurred = True
+            
+        if exceptions_occurred:
+            raise Exception("Exceptions occurred during the loading of the transactions. See the logs for more details.")
+        
+        return transactions
