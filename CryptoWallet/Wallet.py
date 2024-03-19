@@ -34,10 +34,14 @@ class Wallet(object):
         if self.databaseFilename is not None and os.path.exists(self.databaseFilename):
             self.open(self.databaseFilename)
         else:
+            print("No database file provided or file not found, creating an empty wallet.")
             self.transactions = pd.DataFrame()
 
         
     def open(self, filepath_or_buffer):
+        #Check that filepath_or_buffer exists
+        if not os.path.exists(filepath_or_buffer):
+            raise FileNotFoundError(f"File {filepath_or_buffer} not found")
         self.transactions = pd.read_csv(filepath_or_buffer, parse_dates=['datetime'], date_format='ISO8601', converters={
             'type' : lambda s: TransactionType[s],
             'wallet' : lambda s: WalletType[s]
@@ -71,6 +75,7 @@ class Wallet(object):
             
         # After backup, save the transactions to the original file
         self.transactions.to_csv(filepath, index=False)
+        print(f"Transactions saved to {filepath}")
           
     def addTransactions(self, transactions, mergeSimilar = True, removeExisting = True, addMissingUsd = True):
         if mergeSimilar:
@@ -204,7 +209,7 @@ class Wallet(object):
         
     def exportTradingView(self, filename):
         # Condition 1: Exclude certain assets
-        excluded_assets = ['BUSD', 'EUR', 'USD', 'USDT']
+        excluded_assets = ['BUSD', 'EUR', 'USD', 'USDT', 'FDUSD']
         condition1 = ~self.transactions['asset'].isin(excluded_assets)
 
         # Condition 2: Include only certain transaction types
