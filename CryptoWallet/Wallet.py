@@ -197,9 +197,10 @@ class Wallet(object):
         return self.transactions[(self.transactions['wallet'] == WalletType.STAKING)].groupby("asset")['amount'].sum()
     
     def printFirstLastTransactionDatetime(self):
+        from IPython.display import display
         # Group by 'exchange' and aggregate with min and max on 'datetime'
         grouped = self.transactions.groupby(["exchange", "userId"])['datetime'].agg(earliest=('min'), latest=('max'))
-        print(grouped)
+        display(grouped)
         
     def exportTradingView(self, filename):
         # Condition 1: Exclude certain assets

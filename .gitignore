@@ -1,6 +1,6 @@
-data/**
-venv/**
+data
+.venv
 .env
 **/__pycache__/**
-log/**
-ExportedTransactions/**
+log
+ExportedTransactions
