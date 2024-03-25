@@ -9,6 +9,7 @@ from requests_futures.sessions import FuturesSession
 import json
 import os
 import time
+import pickle
 
 # from dotenv import load_dotenv
 # load_dotenv()
@@ -36,8 +37,19 @@ class Wallet(object):
         else:
             print("No database file provided or file not found, creating an empty wallet.")
             self.transactions = pd.DataFrame()
-
         
+        # Load cache from the pickle file "cache.pkl" if it exists
+        self.cacheFilename = "cache.pkl"
+        self.cacheLifetime = 5*60 # 5 min in seconds
+        if os.path.exists(self.cacheFilename):
+          with open(self.cacheFilename, 'rb') as file:
+            self.cache = pickle.load(file)
+        else:
+            self.cache = {}
+
+    def __del__(self):
+        self.saveCache()
+    
     def open(self, filepath_or_buffer):
         #Check that filepath_or_buffer exists
         if not os.path.exists(filepath_or_buffer):
@@ -76,7 +88,11 @@ class Wallet(object):
         # After backup, save the transactions to the original file
         self.transactions.to_csv(filepath, index=False)
         print(f"Transactions saved to {filepath}")
-          
+    
+    def saveCache(self):
+        with open(self.cacheFilename, 'wb') as file:
+            pickle.dump(self.cache, file)
+            
     def addTransactions(self, transactions, mergeSimilar = True, removeExisting = True, addMissingUsd = True):
         if mergeSimilar:
             transactions = self.mergeTransactionsInWindow(transactions)
@@ -96,7 +112,7 @@ class Wallet(object):
             if self.apiKey is None:
                 print("No API key provided, no USD values is added")
             else:
-                transactions = self.addMissingUsdValue(transactions, self.apiKey)
+                transactions = self.requestApiMissingUsdValue(transactions, self.apiKey)
 
         newDf = pd.concat([self.transactions, transactions], ignore_index=True)
         self.transactions = newDf.sort_values("datetime")         
@@ -111,47 +127,41 @@ class Wallet(object):
 
         return transactions.groupby(["asset"])['amount_USD'].sum().rename("cost_USD")
     
-    def getAssetsList(self):
+    def getAssetsList(self) -> pd.Series:
         return pd.Series(self.transactions['asset'].unique())
-    
+          
     def getCurrentPrices(self):
-        if self.apiKey is None:
+      if self.apiKey is None:
             print("No API key provided, returning empty Series")
             return pd.Series()
-        assets = self.getAssetsList()
 
-        # Rename assets to match CryptoCompare API
-        assets = assets.replace(Wallet.CryptoCompareAssetMap)
+      # Get the list of assets
+      assets = self.getAssetsList()
 
-        api_url = 'https://min-api.cryptocompare.com/data/pricemulti'
-        params={
-            'fsyms': ','.join(assets),
-            'tsyms':'USD',
-            'relaxedValidation':'false',
-            'extraParams':'CryptoWallet',
-            'apiKey':self.apiKey
-        }
-        try:
-            response = requests.get(url=api_url,params=params)
-        except requests.exceptions.RequestException as e:
-            print(f"Request Error to CryptoCompare API : {e}\n")
-            return pd.Series()
-        if response.status_code != 200:
-            print(f"Request Error to CryptoCompare API : {response.status_code}")
-            return pd.Series()
-        
-        data = response.json()
-        if 'Response' in data.keys():
-            print(f"CryptoCompare API Error : {data['Message']}\n")
-            return pd.Series()
-        # Extract prices into a pandas Series
-        prices = pd.Series({asset: data[asset]['USD'] for asset in assets if asset in data})
+      # Check if prices are already cached and not too old
+      current_time = time.time()
+      cached_assets = {
+          asset: price_info for asset, price_info in self.cache.items()
+          if current_time - price_info['timestamp'] < 300  # 5 minutes
+      }
 
-        # Replace back the original asset names using the CryptoCompareAssetMap
-        cryptoCompareAssetMap_inverted = {v: k for k, v in Wallet.CryptoCompareAssetMap.items()}
-        prices = prices.rename(index=cryptoCompareAssetMap_inverted)
+      # Filter out assets that are not cached or where cache is too old
+      assets_to_fetch = [asset for asset in assets if asset not in cached_assets]
 
-        return prices
+      # Fetch prices for assets not in cache or where cache is too old
+      if assets_to_fetch:
+          new_prices = self.requestApiCurrentPrices(pd.Series(assets_to_fetch), self.apiKey)
+          # Update cache with new prices
+          for asset, price in new_prices.items():
+              self.cache[asset] = {'value': price, 'timestamp': current_time}
+          
+          self.saveCache()
+
+      # Combine cached prices and new prices
+      prices = pd.Series({**{asset: cached_assets[asset]['value'] for asset in cached_assets}, 
+                          **{asset: self.cache[asset]['value'] for asset in assets_to_fetch}})
+
+      return prices
 
     def getCurrentValueTot(self):
         amount = self.getAmountTot()
@@ -163,7 +173,7 @@ class Wallet(object):
     def getPotentialRevenueTot(self):
         value = self.getCurrentValueTot()
         cost = self.getCostTot()
-        revenue = value - cost
+        revenue = value.sub(cost, fill_value=0)
         revenue.name = "potential_revenue_USD"
         return revenue
 
@@ -254,9 +264,72 @@ class Wallet(object):
         merged_transactions.reset_index(inplace=True)
         merged_transactions.drop(columns='group', inplace=True)
         return merged_transactions
+      
+    @staticmethod
+    def requestApiCurrentPrices(assets, apiKey) -> pd.Series:
+        # Rename assets to match CryptoCompare API
+        assets = assets.replace(Wallet.CryptoCompareAssetMap)
+
+        # Create batch of assets where the joinded length is less than 300 characters
+        MAX_FSYMS_LENGH = 300
+        assets_batches = []
+        assets_batch = []
+        for asset in assets:
+            batch_length = len(','.join(assets_batch + [asset]))
+
+            # If the batch is too long, append the current batch to the list of batches and start a new batch
+            if batch_length > MAX_FSYMS_LENGH:
+              assets_batches.append(assets_batch.copy())
+              assets_batch.clear()              
+              
+            assets_batch.append(asset)
+          
+        # Append the last batch to the list of batches
+        assets_batches.append(assets_batch) 
+              
+        # Request prices for each batch of assets to th API
+        prices = []
+        for batch in assets_batches:
+            batch_prices = Wallet.requestApiCurrentPricesBatch(batch, apiKey)
+            prices.append(batch_prices)
+        
+        return pd.concat(prices)
+              
+    @staticmethod
+    def requestApiCurrentPricesBatch(assetsBatch, apiKey):
+        api_url = 'https://min-api.cryptocompare.com/data/pricemulti'
+        params={
+            'fsyms': ','.join(assetsBatch),
+            'tsyms':'USD',
+            'relaxedValidation':'false',
+            'extraParams':'CryptoWallet',
+            'apiKey': apiKey
+        }
+        try:
+            response = requests.get(url=api_url,params=params)
+        except requests.exceptions.RequestException as e:
+            print(f"Request Error to CryptoCompare API : {e}\n")
+            return pd.Series()
+        if response.status_code != 200:
+            print(f"Request Error to CryptoCompare API : {response.status_code}")
+            return pd.Series()
+        
+        data = response.json()
+        if 'Response' in data.keys():
+            print(f"CryptoCompare API Error : {data['Message']}\n")
+            return pd.Series()
+        # Extract prices into a pandas Series
+        prices = pd.Series({asset: data[asset]['USD'] for asset in assetsBatch if asset in data})
+
+        # Replace back the original asset names using the CryptoCompareAssetMap
+        cryptoCompareAssetMap_inverted = {v: k for k, v in Wallet.CryptoCompareAssetMap.items()}
+        prices = prices.rename(index=cryptoCompareAssetMap_inverted)
+
+        return prices
+
 
     @staticmethod
-    def addMissingUsdValue(transactions, apiKey):
+    def requestApiMissingUsdValue(transactions, apiKey):
         # Select missing values
         missingData = transactions[transactions['price_USD'].isna()]
         print(f"Remaining missing price: {len(missingData)}")
@@ -294,5 +367,7 @@ class Wallet(object):
         return transactions
     
     CryptoCompareAssetMap = {
-        'IOTA': 'MIOTA'
+        'IOTA': 'MIOTA',
+        'TON': 'TONCOIN',
+        'STRK': 'STARK'
     }  

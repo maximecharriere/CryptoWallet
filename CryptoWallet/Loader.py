@@ -111,20 +111,16 @@ class BinanceLoader:
         
         return transactions_df
       
-      
-      
-      
-      
 class SwissborgLoader:
     name = 'Swissborg'
     TransactionTypesMap = {
         'Deposit' : TransactionType.DEPOSIT,
-        'Withdraw' : TransactionType.WITHDRAW,
+        'Withdrawal' : TransactionType.WITHDRAW,
         'Buy' : TransactionType.SPOT_TRADE,
         'Sell' : TransactionType.SPOT_TRADE,
         'Payouts' : TransactionType.STAKING_INTEREST
     }     
-    NegativeTransactionTypes = {'Withdraw', 'Sell'}
+    NegativeTransactionTypes = {'Withdrawal', 'Sell'}
     
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
@@ -172,8 +168,6 @@ class SwissborgLoader:
         
         return transactions_df
     
-
-
 class KucoinLoader:
     name = 'Kucoin'  
     

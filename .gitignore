@@ -3,4 +3,4 @@ data
 .env
 **/__pycache__/**
 log
-ExportedTransactions
+cache.pkl
