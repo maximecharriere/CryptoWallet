@@ -33,6 +33,7 @@ class BinanceLoader:
         'ETH 2.0 Staking': TransactionType.STAKING_PURCHASE,
         'ETH 2.0 Staking Rewards': TransactionType.STAKING_INTEREST,
         'ETH 2.0 Staking Withdrawals': TransactionType.STAKING_REDEMPTION,
+        'Launchpool Subscription/Redemption': TransactionType.TBD,
         'Distribution': TransactionType.DISTRIBUTION,
         'Airdrop Assets': TransactionType.DISTRIBUTION,
         'Cash Voucher distribution': TransactionType.DISTRIBUTION,
@@ -71,6 +72,13 @@ class BinanceLoader:
                     note=f"Operation={
                         row['Operation']}" + ('' if row.isna()['Remark'] else (f", Remark={str(row['Remark'])}"))
                 ))
+
+                # Manage all the transaction types that was not managable only with the TransactionTypesMap, and set to TBD.
+                if (transactions[-1].type == TransactionType.TBD):
+                    if (row['Operation'] == 'Launchpool Subscription/Redemption'):
+                        transactions[-1].type = TransactionType.SAVING_PURCHASE if row['Change'] < 0 else TransactionType.SAVING_REDEMPTION
+                    else:
+                        raise KeyError(row['Operation'])
             except KeyError as e:
                 print(f"The transaction type {
                       e} is not supported by the loader")
@@ -85,8 +93,8 @@ class BinanceLoader:
                 transactions[-1].asset = 'ETH'
 
             # In binance the SAVING wallet does not belong to the user.
-            # So during a staking purchase or redemption, there is a transaction telling the in/out flow of the SPOT wallet,
-            # but it does not say the in/out flow of the STAKING wallet.
+            # So during a saving purchase or redemption, there is a transaction telling the in/out flow of the SPOT wallet,
+            # but it does not say the in/out flow of the SAVING wallet.
             # This transaction is therefore added by this program.
             if (transactions[-1].type in {TransactionType.SAVING_PURCHASE, TransactionType.SAVING_REDEMPTION}):
                 transactions.append(dataclasses.replace(transactions[-1],
