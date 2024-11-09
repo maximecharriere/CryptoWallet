@@ -33,7 +33,8 @@ class BinanceLoader:
         'ETH 2.0 Staking': TransactionType.STAKING_PURCHASE,
         'ETH 2.0 Staking Rewards': TransactionType.STAKING_INTEREST,
         'ETH 2.0 Staking Withdrawals': TransactionType.STAKING_REDEMPTION,
-        'Launchpool Subscription/Redemption': TransactionType.TBD,
+        'Launchpool Subscription/Redemption': TransactionType.TBD, # To Be Determined
+        'Launchpool Airdrop': TransactionType.DISTRIBUTION,
         'Distribution': TransactionType.DISTRIBUTION,
         'Airdrop Assets': TransactionType.DISTRIBUTION,
         'Cash Voucher distribution': TransactionType.DISTRIBUTION,
@@ -42,8 +43,11 @@ class BinanceLoader:
         'Referral Commission': TransactionType.REFERRAL_INTEREST,
         'Referral Kickback': TransactionType.REFERRAL_INTEREST,
         'Token Swap - Redenomination/Rebranding': TransactionType.REDENOMINATION,
+        'Token Swap - Distribution': TransactionType.REDENOMINATION,
+        'Asset Recovery': TransactionType.REDENOMINATION,
         'Crypto Box': TransactionType.DISTRIBUTION,
-        'Binance Convert': TransactionType.SPOT_TRADE
+        'Binance Convert': TransactionType.SPOT_TRADE,
+        'Merchant Acquiring': TransactionType.SPEND
     }
     CryptoNameMap = {
         'SHIB2': 'SHIB'
@@ -80,8 +84,7 @@ class BinanceLoader:
                     else:
                         raise KeyError(row['Operation'])
             except KeyError as e:
-                print(f"The transaction type {
-                      e} is not supported by the loader")
+                print(f"The transaction type {e} is not supported by the loader")
                 exceptions_occurred = True
 
             # The BETH coin is the coin representing ETH coins staked in the ETH 2.0 Staking program.
@@ -204,13 +207,13 @@ class KucoinLoader:
         print(f"Loading transactions from {folderpath} folder")
         # Check that the folderpath is a folder
         if not os.path.isdir(folderpath):
-            raise Exception(f"The path {
-                            folderpath} is not a folder. Kucoin store multiple CSV files in a folder")
+            raise Exception(f"The path {folderpath} is not a folder. Kucoin store multiple CSV files in a folder")
 
         csv_files = [file for file in os.listdir(
             folderpath) if file.endswith('.csv')]
         transactions = []
         for file in csv_files:
+            print(f"- Reading '{file}'")
             filepath = os.path.join(folderpath, file)
             df = pd.read_csv(filepath)
             if df.empty:
@@ -232,6 +235,8 @@ class KucoinLoader:
                 transactions.extend(cls.load_fiat_deposit(df, filepath))
             elif file.startswith("Fiat Orders_Fiat Withdrawals"):
                 transactions.extend(cls.load_fiat_withdrawal(df, filepath))
+            elif file.startswith("Trading Bot_Filled Orders (Show Order-Splitting)_Spot"):
+                pass
             else:
                 raise Exception(
                     f"The file '{file}' is not supported by the loader and is not empty.")

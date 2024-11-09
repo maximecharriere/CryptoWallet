@@ -14,20 +14,6 @@ import pickle
 # from dotenv import load_dotenv
 # load_dotenv()
 
-
-def responseHandling_hook(r, *args, **kwargs):
-    r_json = r.json()
-    if r_json['Response'] != "Success":
-        print(f"CryptoCompare API Error : {r_json['Type']} : {r_json['Message']}\n")
-        r.price = np.NaN
-        r.failedReply = r_json
-        return r
-    # Compute hourly mean price
-    data = r_json['Data']['Data'][-1]
-    r.price = (data['high'] + data['low'])/2
-    r.failedReply = None
-    return r
-
 class Wallet(object):
     def __init__(self, apiKey = None, databaseFilename = None):
         self.apiKey = apiKey
@@ -108,15 +94,19 @@ class Wallet(object):
                         if mask.any():
                             print(f"Removing {mask.sum()}/{len(group)} transactions from {exchange} {userId} already existing in the wallet.")
                         transactions = transactions[~mask]
-        if addMissingUsd:
-            if self.apiKey is None:
-                print("No API key provided, no USD values is added")
-            else:
-                transactions = self.requestApiMissingUsdValue(transactions, self.apiKey)
+
 
         newDf = pd.concat([self.transactions, transactions], ignore_index=True)
         self.transactions = newDf.sort_values("datetime")         
-
+        if addMissingUsd:
+            self.addMissingUsdPrice()
+                
+                        
+    def addMissingUsdPrice(self):
+        if self.apiKey is None:
+            print("No API key provided, no USD values is added")
+        self.transactions = self.requestApiMissingUsdPrice(self.transactions, self.apiKey)
+        
     def getAmountTot(self):
         return self.transactions.groupby("asset")['amount'].sum()
     
@@ -292,8 +282,13 @@ class Wallet(object):
         for batch in assets_batches:
             batch_prices = Wallet.requestApiCurrentPricesBatch(batch, apiKey)
             prices.append(batch_prices)
+        prices = pd.concat(prices)
         
-        return pd.concat(prices)
+        # Replace back the original asset names using the CryptoCompareAssetMap
+        cryptoCompareAssetMap_inverted = {v: k for k, v in Wallet.CryptoCompareAssetMap.items()}
+        prices = prices.rename(index=cryptoCompareAssetMap_inverted)
+        
+        return prices
               
     @staticmethod
     def requestApiCurrentPricesBatch(assetsBatch, apiKey):
@@ -321,53 +316,99 @@ class Wallet(object):
         # Extract prices into a pandas Series
         prices = pd.Series({asset: data[asset]['USD'] for asset in assetsBatch if asset in data})
 
-        # Replace back the original asset names using the CryptoCompareAssetMap
-        cryptoCompareAssetMap_inverted = {v: k for k, v in Wallet.CryptoCompareAssetMap.items()}
-        prices = prices.rename(index=cryptoCompareAssetMap_inverted)
-
         return prices
 
 
     @staticmethod
-    def requestApiMissingUsdValue(transactions, apiKey):
-        # Select missing values
-        missingData = transactions[transactions['price_USD'].isna()]
-        print(f"Remaining missing price: {len(missingData)}")
+    def requestApiMissingUsdPrice(transactions, apiKey):
+        # Select transactions with missing usd price
+        missingUsdPrice = transactions[transactions['price_USD'].isna()].copy()  # Copy to avoid SettingWithCopyWarning
+        # remove the unsuported assets by the api
+        missingUsdPrice = missingUsdPrice[~missingUsdPrice['asset'].isin(Wallet.CryptoCompareUnsupportedAssets)]
+        
+        print(f"Remaining missing price to request: {len(missingUsdPrice)}")
+        
+        if missingUsdPrice.empty:
+            return transactions
 
         # Rename assets to match CryptoCompare API
-        missingData['asset'] = missingData['asset'].replace(Wallet.CryptoCompareAssetMap)
+        missingUsdPrice['asset'] = missingUsdPrice['asset'].replace(Wallet.CryptoCompareAssetMap)
         
+        # API setup
         api_url = 'https://min-api.cryptocompare.com/data/v2/histohour'
         nWorkers = 3
-        apiCallLimitPerSecond = 50
+        # apiCallLimitPerSecond = 50
+        
         with FuturesSession(max_workers=nWorkers) as session:
-            futures = [session.get(
-                url=api_url,
-                params={
-                    'fsym': asset,
-                    'tsym':'USD',
-                    'limit':'1',
-                    'toTs':datetime.timestamp(),
-                    'extraParams':'CryptoWallet',
-                    'apiKey':apiKey
-                    },
-                hooks = {'response': responseHandling_hook}
-                ) for asset, datetime in zip(missingData['asset'], missingData['datetime'])]
+            futures = []
+             # Submit requests with row indices as metadata
+            for idx, row in missingUsdPrice.iterrows():
+                future = session.get(
+                    url=api_url,
+                    params={
+                        'fsym': row['asset'],
+                        'tsym':'USD',
+                        'limit':'1',
+                        'toTs':row['datetime'].timestamp(),
+                        'extraParams':'CryptoWallet',
+                        'apiKey':apiKey
+                    }
+                )
+                # Attach the index to each future so we know where to place the result
+                future.idx = idx
+                futures.append(future)
+            
+            prices = {}
+            failedReplies = {}
+            
+            # Process each completed future
             try:
-                prices = [future.result().price for future in tqdm(futures)]
-                failedReplies = [future.result().failedReply for future in futures]
-            except KeyboardInterrupt:
+                for future in tqdm(futures, desc="Fetching prices"):
+                    response = future.result()
+                    
+                    # Check if API request was successful
+                    if response.status_code != 200:
+                        print(f"Request Error: Status {response.status_code}")
+                        failedReplies[future.idx] = {"status_code": response.status_code}
+                        continue
+                        
+                    json_data = response.json()
+                    # Check if API reponse is not successful
+                    if json_data['Response'] != "Success":
+                        print(f"API Error {json_data['Type']}: {json_data['Message']}")
+                        failedReplies[future.idx] = json_data
+                        continue
+                    
+                    # Extract and calculate the average price
+                    try:
+                        data = json_data['Data']['Data'][-1]
+                        avg_price = (data['high'] + data['low']) / 2
+                        prices[future.idx] = avg_price
+                    except (KeyError, IndexError, TypeError) as e:
+                        print(f"Data parsing error for index {future.idx}: {e}")
+                        failedReplies[future.idx] = {"error": str(e)}
+        
+            except KeyboardInterrupt: # Stop API request, but don't propagate the exception, to continue the rest of the code
                 print("Interrupt received, stopping API requests...")
-            finally:#TODO saving in case of interruption is not working
-                with open('log/apiFailedReply.json', 'w') as logfile:
-                    json.dump(failedReplies, logfile, indent=4)
-                transactions.loc[transactions['price_USD'].isna(), "price_USD"] = prices
-                transactions["amount_USD"] = transactions["amount"] * transactions["price_USD"]
+                
+            finally:
+                # Save failed replies to a log file if there are any
+                if failedReplies:
+                    os.makedirs('log', exist_ok=True)
+                    with open('log/apiFailedReply.json', 'w') as logfile:
+                        json.dump(failedReplies, logfile, indent=4)
+                
+                # Update the transactions DataFrame with prices
+                price_series = pd.Series(prices)
+                transactions.loc[price_series.index, 'price_USD'] = price_series
+                transactions.loc[price_series.index, 'amount_USD'] = (
+                    transactions.loc[price_series.index, 'amount'] * transactions.loc[price_series.index, 'price_USD']
+                )
         
         return transactions
     
     CryptoCompareAssetMap = {
         'IOTA': 'MIOTA',
-        'TON': 'TONCOIN',
         'STRK': 'STARK'
     }  
+    CryptoCompareUnsupportedAssets = ['1000PEPPER']
