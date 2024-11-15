@@ -84,8 +84,10 @@ class BinanceLoader:
                     else:
                         raise KeyError(row['Operation'])
             except KeyError as e:
+                # If a KeyError is raised, it means that the transaction type is not supported by the loader. As many missing transaction type can be missing, we don't raise an exception here. We analyse all the transactions and raise an exception at the end if needed.
                 print(f"The transaction type {e} is not supported by the loader")
                 exceptions_occurred = True
+                continue
 
             # The BETH coin is the coin representing ETH coins staked in the ETH 2.0 Staking program.
             # Put them in the Staking wallet and remove the prefix.
@@ -102,8 +104,7 @@ class BinanceLoader:
             if (transactions[-1].type in {TransactionType.SAVING_PURCHASE, TransactionType.SAVING_REDEMPTION}):
                 transactions.append(dataclasses.replace(transactions[-1],
                                                         wallet=WalletType.SAVING,
-                                                        amount=-
-                                                        transactions[-1].amount,
+                                                        amount=-transactions[-1].amount,
                                                         note=transactions[-1].note + ', Transaction not from Binance'))
 
             # In binance the STAKING wallet does not belong to the user.
@@ -121,6 +122,7 @@ class BinanceLoader:
                                                         note=transactions[-1].note + ', Transaction not from Binance'))
 
         transactions_df = pd.DataFrame(transactions)
+        
         transactions_df['asset'] = transactions_df['asset'].map(
             lambda s: cls.CryptoNameMap[s] if s in cls.CryptoNameMap else s)
 
@@ -179,15 +181,14 @@ class SwissborgLoader:
                 # If the transaction fee is not 0, add a new transaction for the fee
                 if (row['Fee'] != 0):
                     transactions.append(dataclasses.replace(transactions[-1],
-                                                            amount=row['Fee'],
+                                                            amount=-row['Fee'],
                                                             type=TransactionType.FEE,
                                                             note=transactions[-1].note +
                                                             ', Fee',
                                                             amount_USD=row['Fee (USD)']))
 
             except KeyError as e:
-                print(f"The transaction type {
-                      e} is not supported by the loader")
+                print(f"The transaction type {e} is not supported by the loader")
                 exceptions_occurred = True
 
         transactions_df = pd.DataFrame(transactions)
@@ -197,11 +198,23 @@ class SwissborgLoader:
                 "Exceptions occurred during the loading of the transactions. See the logs for more details.")
 
         return transactions_df
-
-
+    
 class KucoinLoader:
     name = 'Kucoin'
-
+    TransactionTypesMap = {
+            'Deposit': TransactionType.DEPOSIT,
+            'Withdraw': TransactionType.WITHDRAW,
+            'Withdrawal': TransactionType.WITHDRAW,
+            'Transfer': TransactionType.TBD, # To Be Determined
+            'Rewards': TransactionType.DISTRIBUTION,
+            'KCS Bonus': TransactionType.DISTRIBUTION,
+            'Fiat Deposit': TransactionType.DEPOSIT,
+            'KuCoin Event': TransactionType.TBD,
+            'Spot': TransactionType.SPOT_TRADE,
+            'Fee Refunds using KCS': TransactionType.SPOT_TRADE,
+            'KCS Fee Deduction': TransactionType.SPOT_TRADE,
+        }
+    
     @classmethod
     def load(cls, folderpath) -> pd.DataFrame:
         print(f"Loading transactions from {folderpath} folder")
@@ -209,407 +222,93 @@ class KucoinLoader:
         if not os.path.isdir(folderpath):
             raise Exception(f"The path {folderpath} is not a folder. Kucoin store multiple CSV files in a folder")
 
-        csv_files = [file for file in os.listdir(
-            folderpath) if file.endswith('.csv')]
+        csv_files = [file for file in os.listdir(folderpath) if file.endswith('.csv')]
         transactions = []
+        exceptions_occurred = False
         for file in csv_files:
             print(f"- Reading '{file}'")
             filepath = os.path.join(folderpath, file)
-            df = pd.read_csv(filepath)
-            if df.empty:
+            inTransactions = pd.read_csv(filepath)
+            if inTransactions.empty:
                 continue
 
-            if file.startswith("Deposit_Withdrawal History_Deposit History"):
-                transactions.extend(cls.load_deposit(df))
-            elif file.startswith("Deposit_Withdrawal History_Withdrawal Record"):
-                transactions.extend(cls.load_withdrawal(df))
-            elif file.startswith("Spot Orders_Filled Orders (Show Order-Splitting)"):
-                pass
-            elif file.startswith("Spot Orders_Filled Orders"):
-                transactions.extend(cls.load_spot_orders(df))
-            elif file.startswith("Account History_Funding Account"):
-                transactions.extend(cls.load_funding_account(df))
-            elif file.startswith("Others_Asset Snapshots"):
-                pass
-            elif file.startswith("Fiat Orders_Fiat Deposits"):
-                transactions.extend(cls.load_fiat_deposit(df, filepath))
-            elif file.startswith("Fiat Orders_Fiat Withdrawals"):
-                transactions.extend(cls.load_fiat_withdrawal(df, filepath))
-            elif file.startswith("Trading Bot_Filled Orders (Show Order-Splitting)_Spot"):
-                pass
-            else:
-                raise Exception(
-                    f"The file '{file}' is not supported by the loader and is not empty.")
+            # Get the wallet type from the file name
+            if file.startswith("Account History_Funding Account"):
+                walletType = WalletType.FUNDING
+            elif file.startswith("Account History_Trading Account"):
+                walletType = WalletType.SPOT
+            elif file.startswith("Account History_Cross Margin Account"):
+                raise Exception("The Cross Margin Account is not supported by the loader.")
+            elif file.startswith("Account History_Isolated Margin Account"):
+                raise Exception("The Isolated Margin Account is not supported by the loader.")
+            else :
+                print(f"The file '{file}' is skipped. Only 'Account History' files are used by the loader.")
+                continue
+
+            # Get the time column name and timezone offset
+            time_column_name, timezone_offset_minutes  = cls.get_time_offset(inTransactions)
+
+            for idx, row in inTransactions.iterrows():
+                try:
+                    # manage amount sign
+                    if (row['Side'] == 'Deposit'):
+                        amount=row['Amount']
+                    elif (row['Side'] == 'Withdrawal'):
+                        amount=-row['Amount']
+                    else:
+                        raise KeyError(row['Side'])
+                    
+                    transactions.append(Transaction(
+                        datetime=datetime.fromisoformat(str(row[time_column_name])).replace(tzinfo=timezone(
+                            timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
+                        asset=row['Currency'],
+                        amount=amount,
+                        type=cls.TransactionTypesMap[row['Type']],
+                        exchange=cls.name,
+                        userId=row['UID'],
+                        wallet=walletType,
+                        note=f"Remark={row['Remark']}, Type={row['Type']}, Side={row['Side']}"
+                    ))
+                    
+                    if (transactions[-1].type == TransactionType.TBD):
+                        # if the type is a transfer between two internal account, set the type to DEPOSIT or WITHDRAW
+                        if (row['Type'] == 'Transfer'):
+                            transactions[-1].type = cls.TransactionTypesMap[row['Side']]
+                        elif (row['Type'] == 'KuCoin Event'):
+                            transactions[-1].type = cls.TransactionTypesMap[row['Side']]
+                        else:
+                            raise KeyError(row['Type'])
+                    
+                except KeyError as e:
+                    # If a KeyError is raised, it means that the transaction type is not supported by the loader. As many missing transaction type can be missing, we don't raise an exception here. We analyse all the transactions and raise an exception at the end if needed.
+                    print(f"The key '{e}' is not supported by the loader")
+                    exceptions_occurred = True
+                    continue
+                
+                # If the transaction fee is not 0, add a new transaction for the fee
+                if (row['Fee'] != 0):
+                    transactions.append(dataclasses.replace(transactions[-1],
+                                                            amount=-row['Fee'],
+                                                            type=TransactionType.FEE,
+                                                            note=transactions[-1].note + ', Fee'))
 
         transactions_df = pd.DataFrame(transactions)
-
+        
+        if exceptions_occurred:
+            raise Exception(
+                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
         return transactions_df
-
+    
+    
     @classmethod
-    def load_deposit(cls, inTransactions) -> list[Transaction]:
-        transactions = []
-        exceptions_occurred = False
-
+    def get_time_offset(cls, data):
         # Get the name of the column which has the format 'Time(UTC+02:00)'
-        time_column_name = [
-            col for col in inTransactions.columns if 'Time(UTC' in col][0]
-
+        time_column_name = [col for col in data.columns if 'Time(UTC' in col][0]
         # Extract the sign, hours, and minutes from the timezone string
         sign = time_column_name[8]
         hours = int(time_column_name[9:11])
         minutes = int(time_column_name[12:14])
         # Calculate the total offset in minutes
-        timezone_offset_minutes = (
-            hours * 60 + minutes) * (-1 if sign == '-' else 1)
+        timezone_offset_minutes = (hours * 60 + minutes) * (-1 if sign == '-' else 1)
+        return time_column_name, timezone_offset_minutes
 
-        for idx, row in inTransactions.iterrows():
-            try:
-                transactions.append(Transaction(
-                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(
-                        timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
-                    asset=row['Coin'],
-                    amount=row['Amount'],
-                    type=TransactionType.DEPOSIT,
-                    exchange=cls.name,
-                    userId=row['UID'],
-                    wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
-                    note=f"Remarks={row['Remarks']}"
-                ))
-                # If the transaction fee is not 0, add a new transaction for the fee
-                if (row['Fee'] != 0):
-                    transactions.append(dataclasses.replace(transactions[-1],
-                                                            amount=row['Fee'],
-                                                            type=TransactionType.FEE,
-                                                            note=transactions[-1].note + ', Fee'))
-
-            except KeyError as e:
-                print(f"The transaction type {
-                      e} is not supported by the loader")
-                exceptions_occurred = True
-
-        if exceptions_occurred:
-            raise Exception(
-                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
-
-        return transactions
-
-    @classmethod
-    def load_withdrawal(cls, inTransactions) -> list[Transaction]:
-        transactions = []
-        exceptions_occurred = False
-
-        # Get the name of the column which has the format 'Time(UTC+02:00)'
-        time_column_name = [
-            col for col in inTransactions.columns if 'Time(UTC' in col][0]
-
-        # Extract the sign, hours, and minutes from the timezone string
-        sign = time_column_name[8]
-        hours = int(time_column_name[9:11])
-        minutes = int(time_column_name[12:14])
-        # Calculate the total offset in minutes
-        timezone_offset_minutes = (
-            hours * 60 + minutes) * (-1 if sign == '-' else 1)
-
-        for idx, row in inTransactions.iterrows():
-            try:
-                transactions.append(Transaction(
-                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(
-                        timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
-                    asset=row['Coin'],
-                    amount=-row['Amount'],
-                    type=TransactionType.WITHDRAW,
-                    exchange=cls.name,
-                    userId=row['UID'],
-                    wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
-                    note=f"Remarks={row['Remarks']}"
-                ))
-                # If the transaction fee is not 0, add a new transaction for the fee
-                if (row['Fee'] != 0):
-                    transactions.append(dataclasses.replace(transactions[-1],
-                                                            amount=row['Fee'],
-                                                            type=TransactionType.FEE,
-                                                            note=transactions[-1].note + ', Fee'))
-
-            except KeyError as e:
-                print(f"The transaction type {
-                      e} is not supported by the loader")
-                exceptions_occurred = True
-
-        if exceptions_occurred:
-            raise Exception(
-                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
-
-        return transactions
-
-    @classmethod
-    def load_spot_orders(cls, inTransactions) -> list[Transaction]:
-        transactions = []
-        exceptions_occurred = False
-
-        # Get the name of the column which has the format 'Filled Time(UTC+02:00)'
-        time_column_name = [
-            col for col in inTransactions.columns if 'Filled Time(UTC' in col][0]
-
-        # Extract the sign, hours, and minutes from the timezone string
-        sign = time_column_name[15]
-        hours = int(time_column_name[16:18])
-        minutes = int(time_column_name[19:21])
-        # Calculate the total offset in minutes
-        timezone_offset_minutes = (
-            hours * 60 + minutes) * (-1 if sign == '-' else 1)
-
-        for idx, row in inTransactions.iterrows():
-            try:
-                # The trading pair is in the format 'BTC-USDT' in the column 'Symbol'. Slit it to get the two assets
-                asset1, asset2 = row['Symbol'].split('-')
-                # Only SELL and BUY transactions are supported
-                if row['Side'] not in {'SELL', 'BUY'}:
-                    raise KeyError(row['Side'])
-                # Add transaction for the first asset
-                transactions.append(Transaction(
-                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(
-                        timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
-                    asset=asset1,
-                    amount=row['Filled Amount'] if row['Side'] == 'BUY' else -
-                    row['Filled Amount'],
-                    type=TransactionType.SPOT_TRADE,
-                    exchange=cls.name,
-                    userId=row['UID'],
-                    wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
-                    note=f"Symbol={row['Symbol']}, Side={row['Side']}",
-                    price_USD=row['Filled Volume (USDT)']/row['Filled Amount'],
-                    amount_USD=row['Filled Volume (USDT)'] if row['Side'] == 'BUY' else - \
-                    row['Filled Volume (USDT)']
-                ))
-                # Add transaction for the second asset
-                transactions.append(dataclasses.replace(transactions[-1],
-                                                        asset=asset2,
-                                                        amount=row['Filled Volume'] if row['Side'] == 'SELL' else -
-                                                        row['Filled Volume'],
-                                                        price_USD=row['Filled Volume (USDT)'] /
-                                                        row['Filled Volume'],
-                                                        amount_USD=row['Filled Volume (USDT)'] if row['Side'] == 'SELL' else -
-                                                        row['Filled Volume (USDT)']
-                                                        ))
-                # If the transaction fee is not 0, add a new transaction for the fee
-                if (row['Fee'] != 0):
-                    transactions.append(dataclasses.replace(transactions[-1],
-                                                            asset=row['Fee Currency'],
-                                                            amount=row['Fee'],
-                                                            type=TransactionType.FEE,
-                                                            note=transactions[-1].note +
-                                                            ', Fee',
-                                                            price_USD=None,
-                                                            amount_USD=None
-                                                            ))
-
-            except KeyError as e:
-                print(f"The transaction type {
-                      e} is not supported by the loader")
-                exceptions_occurred = True
-
-        if exceptions_occurred:
-            raise Exception(
-                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
-
-        return transactions
-
-    @classmethod
-    def load_funding_account(cls, inTransactions) -> list[Transaction]:
-        transactions = []
-        exceptions_occurred = False
-
-        # Get the name of the column which has the format 'Time(UTC+02:00)'
-        time_column_name = [
-            col for col in inTransactions.columns if 'Time(UTC' in col][0]
-
-        # Extract the sign, hours, and minutes from the timezone string
-        sign = time_column_name[8]
-        hours = int(time_column_name[9:11])
-        minutes = int(time_column_name[12:14])
-        # Calculate the total offset in minutes
-        timezone_offset_minutes = (
-            hours * 60 + minutes) * (-1 if sign == '-' else 1)
-
-        for idx, row in inTransactions.iterrows():
-            try:
-                # Only DISTRIBUTION transactions are supported
-                if not 'BONUS' in row['Remark'].upper():
-                    raise KeyError('Funding Account')
-                transactions.append(Transaction(
-                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(
-                        timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
-                    asset=row['Currency'],
-                    amount=row['Amount'],
-                    # the type of the transaction is TransactionType.DISTRIBUTION if the Remark include the word BONUS, bonus or Bonus
-                    type=TransactionType.DISTRIBUTION,
-                    exchange=cls.name,
-                    userId=row['UID'],
-                    wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
-                    note=f"Side={
-                        row['Side']}" + ('' if row.isna()['Remark'] else (f", Remark={str(row['Remark'])}"))
-                ))
-                # If the transaction fee is not 0, add a new transaction for the fee
-                if (row['Fee'] != 0):
-                    transactions.append(dataclasses.replace(transactions[-1],
-                                                            amount=row['Fee'],
-                                                            type=TransactionType.FEE,
-                                                            note=transactions[-1].note + ', Fee'))
-
-            except KeyError as e:
-                print(f"The transaction type {
-                      e} is not supported by the loader")
-                exceptions_occurred = True
-
-        if exceptions_occurred:
-            raise Exception(
-                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
-
-        return transactions
-
-    @classmethod
-    def load_fiat_deposit(cls, inTransactions, filepath) -> list[Transaction]:
-        transactions = []
-        exceptions_occurred = False
-
-        # Get time column name and timezone offset
-        # Get the name of the column which has the format 'Time(UTC+hh:mm)'
-        time_column_name = [
-            col for col in inTransactions.columns if 'Time(UTC' in col][0]
-
-        # Extract the sign, hours, and minutes from the timezone string
-        sign = time_column_name[8]
-        hours = int(time_column_name[9:11])
-        minutes = int(time_column_name[12:14])
-        # Calculate the total offset in minutes
-        timezone_offset_minutes = (
-            hours * 60 + minutes) * (-1 if sign == '-' else 1)
-
-        # Get User ID
-        # No user ID in this CSV file, get it from neighbouring CSV files in the same folder.
-        # Open CSV files from the same folder, and try to get the 'UID' from the first element from them.
-        # If the column 'UID' is not found, or the first cell is empty, pass to the next file.
-        # If the 'UID' is found, break the loop and use this 'UID'.
-        folderpath = os.path.dirname(filepath)
-        csv_files = [file for file in os.listdir(
-            folderpath) if file.endswith('.csv')]
-        userId = ''
-        for file in csv_files:
-            if file == os.path.basename(filepath):
-                continue
-            try:
-                tempTransactions = pd.read_csv(os.path.join(folderpath, file))
-                userId = tempTransactions['UID'][0]
-                break
-            except KeyError:
-                pass
-            except IndexError:
-                pass
-        if userId == '':
-            raise Exception(
-                f"No User ID could be found in the folder '{folderpath}'. Please check the CSV files.")
-
-        for idx, row in inTransactions.iterrows():
-            try:
-                transactions.append(Transaction(
-                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(
-                        timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
-                    asset=row['Currency (Fiat)'],
-                    amount=row['Fiat Amount'],
-                    type=TransactionType.DEPOSIT,
-                    exchange=cls.name,
-                    userId=userId,
-                    wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
-                    note=f"Deposit Method={row['Deposit Method']}"
-                ))
-                # If the transaction fee is not 0, add a new transaction for the fee
-                if (row['Fee'] != 0):
-                    transactions.append(dataclasses.replace(transactions[-1],
-                                                            amount=row['Fee'],
-                                                            type=TransactionType.FEE,
-                                                            note=transactions[-1].note + ', Fee'))
-
-            except KeyError as e:
-                print(f"The transaction type {
-                      e} is not supported by the loader")
-                exceptions_occurred = True
-
-        if exceptions_occurred:
-            raise Exception(
-                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
-
-        return transactions
-
-    @classmethod
-    def load_fiat_withdrawal(cls, inTransactions, filepath) -> list[Transaction]:
-        transactions = []
-        exceptions_occurred = False
-
-        # Get time column name and timezone offset
-        # Get the name of the column which has the format 'Time(UTC+02:00)'
-        time_column_name = [
-            col for col in inTransactions.columns if 'Time(UTC' in col][0]
-
-        # Extract the sign, hours, and minutes from the timezone string
-        sign = time_column_name[8]
-        hours = int(time_column_name[9:11])
-        minutes = int(time_column_name[12:14])
-        # Calculate the total offset in minutes
-        timezone_offset_minutes = (
-            hours * 60 + minutes) * (-1 if sign == '-' else 1)
-
-        # Get User ID
-        # No user ID in this CSV file, get it from neighbouring CSV files in the same folder.
-        # Open CSV files from the same folder, and try to get the 'UID' from the first element from them.
-        # If the column 'UID' is not found, or the first cell is empty, pass to the next file.
-        # If the 'UID' is found, break the loop and use this 'UID'.
-        folderpath = os.path.dirname(filepath)
-        csv_files = [file for file in os.listdir(
-            folderpath) if file.endswith('.csv')]
-        userId = ''
-        for file in csv_files:
-            if file == os.path.basename(filepath):
-                continue
-            try:
-                tempTransactions = pd.read_csv(os.path.join(folderpath, file))
-                userId = tempTransactions['UID'][0]
-                break
-            except KeyError:
-                pass
-            except IndexError:
-                pass
-        if userId == '':
-            raise Exception(
-                f"No User ID could be found in the folder '{folderpath}'. Please check the CSV files.")
-
-        for idx, row in inTransactions.iterrows():
-            try:
-                transactions.append(Transaction(
-                    datetime=datetime.fromisoformat(row[time_column_name]).replace(tzinfo=timezone(
-                        timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
-                    asset=row['Currency (Fiat)'],
-                    amount=-row['Fiat Amount'],
-                    type=TransactionType.WITHDRAW,
-                    exchange=cls.name,
-                    userId=userId,
-                    wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
-                    note=f"Remarks={row['Withdrawal Method']}"
-                ))
-                # If the transaction fee is not 0, add a new transaction for the fee
-                if (row['Fee'] != 0):
-                    transactions.append(dataclasses.replace(transactions[-1],
-                                                            amount=row['Fee'],
-                                                            asset=row['Fee Currency'],
-                                                            type=TransactionType.FEE,
-                                                            note=transactions[-1].note + ', Fee'))
-
-            except KeyError as e:
-                print(f"The transaction type {
-                      e} is not supported by the loader")
-                exceptions_occurred = True
-
-        if exceptions_occurred:
-            raise Exception(
-                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
-
-        return transactions
