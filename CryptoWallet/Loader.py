@@ -312,3 +312,169 @@ class KucoinLoader:
         timezone_offset_minutes = (hours * 60 + minutes) * (-1 if sign == '-' else 1)
         return time_column_name, timezone_offset_minutes
 
+
+class BybitLoader:
+    name = 'Bybit'
+    TransactionTypesMap = {
+            'Deposit': TransactionType.DEPOSIT,
+            'Withdrawal': TransactionType.WITHDRAW,
+            'Transfer from Unified Trading Account': TransactionType.DEPOSIT,
+            'Transfer to Unified Trading Account': TransactionType.WITHDRAW,
+            'Launchpool Manual Withdrawal': TransactionType.SAVING_REDEMPTION,
+            'Launchpool Yield': TransactionType.SAVING_INTEREST,
+            'Launchpool Subscription': TransactionType.SAVING_PURCHASE,
+            'Earn': TransactionType.DISTRIBUTION
+        }
+    
+    @classmethod
+    def load(cls, folderpath) -> pd.DataFrame:
+        print(f"Loading transactions from {folderpath} folder")
+        # Check that the folderpath is a folder
+        if not os.path.isdir(folderpath):
+            raise Exception(f"The path {folderpath} is not a folder. Bybit store multiple CSV files in a folder")
+
+        csv_files = [file for file in os.listdir(folderpath) if file.endswith('.csv')]
+        transactions = []
+        exceptions_occurred = False
+        for file in csv_files:
+            print(f"- Reading '{file}'")
+            filepath = os.path.join(folderpath, file)
+                
+            # Get the wallet type from the file name
+            if file.startswith("Bybit_AssetChangeDetails_fund"):
+                transactions_funding, exceptions_funding = cls.load_funding(filepath)
+                transactions += transactions_funding
+                exceptions_occurred = exceptions_occurred or exceptions_funding
+            elif file.startswith("Bybit_unifiedAccount_spotTradeHistory"):
+                transactions_spot, exceptions_spot = cls.load_spot(filepath)
+                transactions += transactions_spot
+                exceptions_occurred = exceptions_occurred or exceptions_spot
+            else :
+                raise Exception(f"The file '{file}' is not supported by the loader.")
+            
+            
+        transactions_df = pd.DataFrame(transactions)
+        
+        if exceptions_occurred:
+            raise Exception(
+                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
+            
+        return transactions_df
+    
+    @classmethod
+    def load_funding(cls, filepath):
+        transactions = []
+        exceptions_occurred = False
+        inTransactions = pd.read_csv(filepath, skiprows=1)
+        if inTransactions.empty:
+            return transactions, exceptions_occurred
+        
+        # Get UID from the first row
+        with open(filepath) as f:
+            uid = f.readline().split(',')[0].split(':')[1].strip()
+            
+        for idx, row in inTransactions.iterrows():
+            try:                
+                transaction = Transaction(
+                    datetime=datetime.fromisoformat(str(row['Date & Time(UTC)'])).astimezone(timezone.utc),
+                    asset=row['Coin'],
+                    amount=row['QTY'],
+                    type=cls.TransactionTypesMap[row['Description']],
+                    exchange=cls.name,
+                    userId=uid,
+                    wallet=WalletType.FUNDING,
+                    note=f"Description={row['Description']}, Type={row['Type']}"
+                )
+                
+                if (transaction.type == TransactionType.TBD):
+                    raise KeyError(row['Description'])
+                
+                transactions.append(transaction)
+                
+            except KeyError as e:
+                # If a KeyError is raised, it means that the transaction type is not supported by the loader. As many missing transaction type can be missing, we don't raise an exception here. We analyse all the transactions and raise an exception at the end if needed.
+                print(f"The key '{e}' is not supported by the loader")
+                exceptions_occurred = True
+                continue
+            
+            if (transaction.type in {TransactionType.SAVING_PURCHASE, TransactionType.SAVING_REDEMPTION}):
+                transactions.append(dataclasses.replace(transaction,
+                                                        wallet=WalletType.SAVING,
+                                                        amount=-transaction.amount,
+                                                        note=transaction.note + ', Transaction not from Bybit'))
+
+            if (row['Description'] in {'Transfer from Unified Trading Account', 'Transfer to Unified Trading Account'}):
+                transactions.append(dataclasses.replace(transaction,
+                                                        wallet=WalletType.SPOT,
+                                                        amount=-transaction.amount,
+                                                        type=TransactionType.DEPOSIT if row['Description'] == 'Transfer to Unified Trading Account' else TransactionType.WITHDRAW,
+                                                        note=transaction.note + ', Transaction not from Bybit'))
+                
+        return transactions, exceptions_occurred
+
+    @classmethod
+    def load_spot(cls, filepath):
+        transactions = []
+        exceptions_occurred = False
+        sign = {'BUY': 1, 'SELL': -1}
+        inTransactions = pd.read_csv(filepath, skiprows=1)
+        if inTransactions.empty:
+            return transactions, exceptions_occurred
+        
+        # Get UID from the first row
+        with open(filepath) as f:
+            uid = f.readline().split(',')[0].split(':')[1].strip()
+            
+        for idx, row in inTransactions.iterrows():
+            try:
+                token1, token2 = cls.split_tokens(row['Spot Pairs'])
+                if token1 is None or token2 is None:
+                    raise KeyError(row['Spot Pairs'])
+                
+                transaction = Transaction(
+                    datetime=datetime.fromisoformat(str(row['Timestamp (UTC+0)'])).astimezone(timezone.utc),
+                    asset=token1,
+                    amount=row['Filled Quantity'] * sign[row['Direction']],
+                    type=TransactionType.SPOT_TRADE,
+                    exchange=cls.name,
+                    userId=uid,
+                    wallet=WalletType.SPOT,
+                    note=f"Spot Pairs={row['Spot Pairs']}, Direction={row['Direction']}"
+                )
+                transactions.append(transaction)
+
+            except KeyError as e:
+                # If a KeyError is raised, it means that the transaction type is not supported by the loader. As many missing transaction type can be missing, we don't raise an exception here. We analyse all the transactions and raise an exception at the end if needed.
+                print(f"The key '{e}' is not supported by the loader")
+                exceptions_occurred = True
+                continue
+            
+            # Add a new transaction for the second token in the pair
+            transactions.append(dataclasses.replace(transaction,
+                                                        asset=token2,
+                                                        amount=row['Filled Value'] * sign[row['Direction']] * -1,
+                                                        note=transaction.note + ', Transaction not from Bybit'))
+            
+            # If the transaction fee is not 0, add a new transaction for the fee
+            if (row['Fees'] != 0):
+                transactions.append(dataclasses.replace(transaction,
+                                                        asset = token1 if row['Direction'] == 'BUY' else token2,
+                                                        amount=-row['Fees'],
+                                                        type=TransactionType.FEE,
+                                                        note=transaction.note +', Fee'))
+
+        return transactions, exceptions_occurred
+    
+    
+    @classmethod
+    def split_tokens(cls, spot_pair):
+        known_tokens = ['USDT', 'SOCIAL', 'EUR', 'BTC', 'ETH'] # TODO: Get the list dynamically from tokens in the funding account
+
+        for token in known_tokens:
+            if spot_pair.startswith(token):
+                # Token is at the beginning; the remainder is Token2
+                return token, spot_pair[len(token):]
+            elif spot_pair.endswith(token):
+                # Token is at the end; the beginning is Token1
+                return spot_pair[:-len(token)], token
+        return None, None  # If no match is found
