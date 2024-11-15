@@ -46,18 +46,24 @@ class Wallet(object):
         })
         self.printFirstLastTransactionDatetime()
         
-    def save(self, filepath=None):
-        # If no filename is provided, save to the original file
-        filepath = filepath if filepath is not None else self.databaseFilename
-
-        if filepath is None:
-            raise ValueError("No filename provided and no original databaseFilename set")
+    def save(self):
+        if self.databaseFilename is None:
+            raise ValueError("No database filename provided. Set Wallet.databaseFilename.")
         
+        self.backup()
+            
+        # After backup, save the transactions to the original file
+        self.transactions.to_csv(self.databaseFilename, index=False)
+        print(f"Transactions saved to {self.databaseFilename}")
+    
+    def backup(self):
+        if self.databaseFilename is None:
+            raise ValueError("No database filename provided. Set Wallet.databaseFilename.")
         # Backup the original file by doing a copy of it to the "backup/Ymd_HM" folder
-        if os.path.exists(filepath):
+        if os.path.exists(self.databaseFilename):
             # Get the directory of the current file and the base filename
-            file_dir = os.path.dirname(filepath)
-            base_filename = os.path.basename(filepath)
+            file_dir = os.path.dirname(self.databaseFilename)
+            base_filename = os.path.basename(self.databaseFilename)
             
             # Prepare the backup folder path
             backup_folder = os.path.join(file_dir, "backup", time.strftime("%Y%m%d_%H%M"))
@@ -69,19 +75,17 @@ class Wallet(object):
             # Copy the file to the backup location
             # Use shutil.copy2 to preserve metadata, or shutil.copy if metadata is not important
             import shutil
-            shutil.copy2(filepath, backup_path)
+            shutil.copy2(self.databaseFilename, backup_path)
+            print(f"Backup saved to {backup_path}")
+
             
-        # After backup, save the transactions to the original file
-        self.transactions.to_csv(filepath, index=False)
-        print(f"Transactions saved to {filepath}")
-    
     def saveCache(self):
         with open(self.cacheFilename, 'wb') as file:
             pickle.dump(self.cache, file)
             
     def addTransactions(self, transactions, mergeSimilar = True, removeExisting = True, addMissingUsd = True):
         if mergeSimilar:
-            transactions = self.mergeTransactionsInWindow(transactions)
+            transactions = self.mergeTransactionsInWindow(transactions, window=15*60)
         if removeExisting:
             # Remove transactions that are already in the wallet transactions. For each unique group of "exchange" and "userId", keep the transaction that have a datetime ouside the range between the earliest and latest datetime of the group.
             for (exchange, userId), group in transactions.groupby(['exchange', 'userId']):
@@ -89,11 +93,11 @@ class Wallet(object):
                 if 'exchange' in self.transactions.columns and 'userId' in self.transactions.columns:
                     existingGroupTransactions = self.transactions[(self.transactions['exchange'] == exchange) & (self.transactions['userId'] == userId)]
                     if not existingGroupTransactions.empty:
-                        (earliest, latest) = existingGroupTransactions["datetime"].agg(['min', 'max'])
+                        earliest, latest = existingGroupTransactions["datetime"].agg(['min', 'max'])
                         mask = (group['datetime'] >= earliest) & (group['datetime'] <= latest)
                         if mask.any():
                             print(f"Removing {mask.sum()}/{len(group)} transactions from {exchange} {userId} already existing in the wallet.")
-                        transactions = transactions[~mask]
+                        transactions = transactions.drop(group.index[mask])
 
 
         newDf = pd.concat([self.transactions, transactions], ignore_index=True)
@@ -206,7 +210,13 @@ class Wallet(object):
         # Group by 'exchange' and aggregate with min and max on 'datetime'
         grouped = self.transactions.groupby(["exchange", "userId"])['datetime'].agg(earliest=('min'), latest=('max'))
         display(grouped)
-        
+    
+    def removeTransactionsExchange(self, exchange):
+        self.backup()
+        if exchange not in self.transactions['exchange'].unique():
+            raise ValueError(f"Exchange '{exchange}' not found in the transactions.")
+        self.transactions = self.transactions[self.transactions['exchange'] != exchange]
+    
     def exportTradingView(self, filename):
         # Condition 1: Exclude certain assets
         excluded_assets = ['BUSD', 'EUR', 'USD', 'USDT', 'FDUSD']
@@ -232,7 +242,7 @@ class Wallet(object):
             file.writelines(f"\narray<float> amount = array.from({', '.join(transactionsToPlot['amount_USD'].astype(str))})")
 
     @staticmethod
-    def mergeTransactionsInWindow(transactions, window=15*60): # 15 minutes in seconds
+    def mergeTransactionsInWindow(transactions, window): # window in seconds
         # Group transactions based on unique combination of attributes
         grouped_transactions = transactions.groupby(['asset', 'type', 'exchange', 'userId', 'wallet', 'note'], sort=False)
 
@@ -409,6 +419,10 @@ class Wallet(object):
     
     CryptoCompareAssetMap = {
         'IOTA': 'MIOTA',
-        'STRK': 'STARK'
+        'STRK': 'STARK',
+        'MNT': 'MANTLE'
     }  
     CryptoCompareUnsupportedAssets = ['1000PEPPER']
+    
+    
+    

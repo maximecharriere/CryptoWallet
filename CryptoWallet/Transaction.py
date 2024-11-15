@@ -38,6 +38,7 @@ class WalletType(MyEnum):
     SPOT = "Spot"
     SAVING = "Saving"
     STAKING = "Staking"
+    FUNDING = "Funding"
 
 
 @dataclass
