@@ -86,6 +86,7 @@ class Wallet(object):
     def addTransactions(self, transactions, mergeSimilar = True, removeExisting = True, addMissingUsd = True):
         if mergeSimilar:
             transactions = self.mergeTransactionsInWindow(transactions, window=15*60)
+            
         if removeExisting:
             # Remove transactions that are already in the wallet transactions. For each unique group of "exchange" and "userId", keep the transaction that have a datetime ouside the range between the earliest and latest datetime of the group.
             for (exchange, userId), group in transactions.groupby(['exchange', 'userId']):
@@ -99,13 +100,15 @@ class Wallet(object):
                             print(f"Removing {mask.sum()}/{len(group)} transactions from {exchange} {userId} already existing in the wallet.")
                         transactions = transactions.drop(group.index[mask])
 
-
-        newDf = pd.concat([self.transactions, transactions], ignore_index=True)
-        self.transactions = newDf.sort_values("datetime")         
         if addMissingUsd:
-            self.addMissingUsdPrice()
-                
-                        
+            if self.apiKey is None:
+                raise Exception("No API key provided, no USD values will be added")
+            transactions = self.requestApiMissingUsdPrice(transactions, self.apiKey)
+            
+        newDf = pd.concat([self.transactions, transactions], ignore_index=True)
+        
+        self.transactions = newDf.sort_values("datetime")         
+ 
     def addMissingUsdPrice(self):
         if self.apiKey is None:
             raise Exception("No API key provided, no USD values will be added")
@@ -134,13 +137,10 @@ class Wallet(object):
 
       # Check if prices are already cached and not too old
       current_time = time.time()
-      cached_assets = {
-          asset: price_info for asset, price_info in self.cache.items()
-          if current_time - price_info['timestamp'] < 300  # 5 minutes
-      }
+      cached_assets = [asset for asset, price_info in self.cache.items() if (current_time - price_info['timestamp']) < self.cacheLifetime] 
 
-      # Filter out assets that are not cached or where cache is too old
-      assets_to_fetch = [asset for asset in assets if asset not in cached_assets]
+      # Get assets that are not in cached_assets
+      assets_to_fetch = list(set(assets) - set(cached_assets))
 
       # Fetch prices for assets not in cache or where cache is too old
       if assets_to_fetch:
@@ -151,9 +151,8 @@ class Wallet(object):
           
           self.saveCache()
 
-      # Combine cached prices and new prices
-      prices = pd.Series({**{asset: cached_assets[asset]['value'] for asset in cached_assets}, 
-                          **{asset: self.cache[asset]['value'] for asset in assets_to_fetch}})
+      # return the prices of the assets in "assets" as a Series, taking the value from the self.cache[asset]['value']. If the asset is not in the cache, enter np.nan as the value.
+      prices = pd.Series({asset: self.cache.get(asset, {'value': np.nan})['value'] for asset in assets})
 
       return prices
 
@@ -216,6 +215,9 @@ class Wallet(object):
         if exchange not in self.transactions['exchange'].unique():
             raise ValueError(f"Exchange '{exchange}' not found in the transactions.")
         self.transactions = self.transactions[self.transactions['exchange'] != exchange]
+        
+    def getWalletsBalance(self):
+        return self.transactions.groupby(['exchange', 'asset'])['amount'].sum().unstack(level=0, fill_value=0)
     
     def exportTradingView(self, filename):
         # Condition 1: Exclude certain assets
@@ -306,7 +308,7 @@ class Wallet(object):
         params={
             'fsyms': ','.join(assetsBatch),
             'tsyms':'USD',
-            'relaxedValidation':'false',
+            'relaxedValidation':'true',
             'extraParams':'CryptoWallet',
             'apiKey': apiKey
         }
@@ -323,9 +325,15 @@ class Wallet(object):
         if 'Response' in data.keys():
             print(f"CryptoCompare API Error : {data['Message']}\n")
             return pd.Series()
-        # Extract prices into a pandas Series
-        prices = pd.Series({asset: data[asset]['USD'] for asset in assetsBatch if asset in data})
-
+        
+        # print the assets that are not in the response
+        missing_assets = set(assetsBatch) - set(data.keys())
+        if missing_assets:
+            print(f"Unable to get current price for: {missing_assets}")
+        
+        # Extract prices in data[asset]['USD'] into a pandas Series with asset: price
+        prices = pd.Series({asset: data[asset]['USD'] for asset in data.keys()})
+        
         return prices
 
 
