@@ -258,11 +258,13 @@ class KucoinLoader:
                     else:
                         raise KeyError(row['Side'])
                     
+                    gross_amount = amount + row['Fee'] # Kucoin already substract the fee from the amount, so we need to add it back to get the gross amount
+                    
                     transactions.append(Transaction(
                         datetime=datetime.fromisoformat(str(row[time_column_name])).replace(tzinfo=timezone(
                             timedelta(minutes=timezone_offset_minutes))).astimezone(timezone.utc),
                         asset=row['Currency'],
-                        amount=amount,
+                        amount=gross_amount,
                         type=cls.TransactionTypesMap[row['Type']],
                         exchange=cls.name,
                         userId=row['UID'],
