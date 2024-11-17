@@ -108,7 +108,7 @@ class Wallet(object):
                         
     def addMissingUsdPrice(self):
         if self.apiKey is None:
-            print("No API key provided, no USD values is added")
+            raise Exception("No API key provided, no USD values will be added")
         self.transactions = self.requestApiMissingUsdPrice(self.transactions, self.apiKey)
         
     def getAmountTot(self):
@@ -249,7 +249,7 @@ class Wallet(object):
         # Define a function to merge transactions within a 15-minute window
         def merge_transactions(transaction_group):
             time_diff = transaction_group['datetime'].diff().dt.total_seconds()
-            mask = (time_diff > window) | time_diff.isnull()
+            mask = (abs(time_diff) > window) | time_diff.isnull()
             groups = mask.cumsum().rename('group')
             agg_dict = {
                 'amount': 'sum',
@@ -419,7 +419,6 @@ class Wallet(object):
     
     CryptoCompareAssetMap = {
         'IOTA': 'MIOTA',
-        'STRK': 'STARK',
         'MNT': 'MANTLE'
     }  
     CryptoCompareUnsupportedAssets = ['1000PEPPER']
