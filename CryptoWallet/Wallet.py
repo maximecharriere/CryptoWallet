@@ -26,7 +26,7 @@ class Wallet(object):
         
         # Load cache from the pickle file "cache.pkl" if it exists
         self.cacheFilename = "cache.pkl"
-        self.cacheLifetime = 5*60 # 5 min in seconds
+        self.cacheLifetime = 60*60 # 60 min in seconds
         if os.path.exists(self.cacheFilename):
           with open(self.cacheFilename, 'rb') as file:
             self.cache = pickle.load(file)
@@ -217,7 +217,14 @@ class Wallet(object):
         self.transactions = self.transactions[self.transactions['exchange'] != exchange]
         
     def getWalletsBalance(self):
-        return self.transactions.groupby(['exchange', 'asset'])['amount'].sum().unstack(level=0, fill_value=0)
+        prices = self.getCurrentPrices()
+        amount_df = self.transactions.groupby(['exchange', 'asset'])['amount'].sum().unstack(level=0, fill_value=0)
+        # add columns for each exchange with the current value in USD
+        for exchange in amount_df.columns:
+            amount_df[f"{exchange}_USD"] = amount_df[exchange] * prices
+        # sort the columns by exchange name
+        amount_df = amount_df.reindex(sorted(amount_df.columns), axis=1)
+        return amount_df
     
     def exportTradingView(self, filename):
         # Condition 1: Exclude certain assets
