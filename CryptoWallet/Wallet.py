@@ -275,7 +275,7 @@ class Wallet(object):
         return merged_transactions
       
     @staticmethod
-    def requestApiCurrentPrices(assets, apiKey) -> pd.Series:
+    def requestApiCurrentPrices(assets :pd.Series, apiKey) -> pd.Series:
         # Rename assets to match CryptoCompare API
         assets = assets.replace(Wallet.CryptoCompareAssetMap)
 
@@ -322,24 +322,31 @@ class Wallet(object):
         try:
             response = requests.get(url=api_url,params=params)
         except requests.exceptions.RequestException as e:
-            print(f"Request Error to CryptoCompare API : {e}\n")
-            return pd.Series()
+            raise Exception(f"Request Error to CryptoCompare API : {e}\n")
         if response.status_code != 200:
-            print(f"Request Error to CryptoCompare API : {response.status_code}")
-            return pd.Series()
+            raise Exception(f"Request Error to CryptoCompare API : {response.status_code}")
         
         data = response.json()
         if 'Response' in data.keys():
-            print(f"CryptoCompare API Error : {data['Message']}\n")
-            return pd.Series()
+            if data['Response'] != "Error": # If the API return a "Response" key, but it's not "Error", then it's an unexpected response
+                raise Exception(f"Unexpected response from CryptoCompare API: {data}")
+            
+            if data['Message'].startswith("cccagg_or_exchange market does not exist for this coin pair"):
+                # If the API return an error, check if it's because all the assets are not supported. In this case create an empty list of assets
+                found_assets = []
+            else:
+                # If the API return an other error, raise an exception
+                raise Exception(f"Error send by the CryptoCompare API : {data}")
+        else:
+            found_assets = data.keys()
         
         # print the assets that are not in the response
-        missing_assets = set(assetsBatch) - set(data.keys())
+        missing_assets = set(assetsBatch) - set(found_assets)
         if missing_assets:
             print(f"Unable to get current price for: {missing_assets}")
         
-        # Extract prices in data[asset]['USD'] into a pandas Series with asset: price
-        prices = pd.Series({asset: data[asset]['USD'] for asset in data.keys()})
+        # Extract prices in data[asset]['USD'] into a pandas Series with asset: price. If the asset is not in the response, enter np.nan as the price.
+        prices = pd.Series({asset: data.get(asset, {}).get('USD', np.nan) for asset in assetsBatch})
         
         return prices
 
