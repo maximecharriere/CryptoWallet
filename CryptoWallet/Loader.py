@@ -132,6 +132,23 @@ class BinanceLoader:
 
         return transactions_df
 
+class ManualTransactionsLoader:
+    @classmethod
+    def load(cls, filepath_or_buffer) -> pd.DataFrame:
+        print(f"Loading transactions from {filepath_or_buffer} file")
+        #Check that filepath_or_buffer exists
+        if not os.path.exists(filepath_or_buffer):
+            raise FileNotFoundError(f"File {filepath_or_buffer} not found")
+        # Check that the file is a csv file
+        if (not filepath_or_buffer.endswith('.csv')):
+            raise Exception(f"The file {filepath_or_buffer} is not a csv file")
+        inTransactions = pd.read_csv(filepath_or_buffer, parse_dates=['datetime'], date_format='ISO8601', converters={
+            'type' : lambda s: TransactionType[s],
+            'wallet' : lambda s: WalletType[s]
+        })
+
+        return inTransactions
+
 
 class SwissborgLoader:
     name = 'Swissborg'
