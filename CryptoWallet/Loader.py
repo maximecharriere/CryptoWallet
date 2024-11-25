@@ -132,6 +132,159 @@ class BinanceLoader:
 
         return transactions_df
 
+
+class CoinbaseLoader:
+    name = 'Coinbase'
+    TransactionTypesMap = {
+        'Send': TransactionType.WITHDRAW,
+        'Deposit': TransactionType.DEPOSIT,
+        'Receive': TransactionType.REFERRAL_INTEREST,
+        'Convert': TransactionType.SPOT_TRADE,
+        'Buy': TransactionType.SPOT_TRADE
+    }
+    NegativeTransactionTypes = {'Send', 'Convert'}
+
+    @classmethod
+    def load(cls, filepath_or_buffer) -> pd.DataFrame:
+        print(f"Loading transactions from {filepath_or_buffer} file")
+        # Check that the file is a csv file
+        if (not filepath_or_buffer.endswith('.csv')):
+            raise Exception(f"The file {filepath_or_buffer} is not a csv file")
+        transactions = []
+        exceptions_occurred = False
+        inTransactions = pd.read_csv(
+            filepath_or_buffer, 
+            skiprows=3,
+            converters={
+                'Timestamp': lambda value: datetime.strptime(value, "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=timezone.utc),
+                'Price at Transaction': cls.strip_currency,
+                'Subtotal': cls.strip_currency,
+                'Total (inclusive of fees and/or spread)': cls.strip_currency,
+                'Fees and/or Spread': cls.strip_currency
+            })
+        if inTransactions.empty:
+            return pd.DataFrame(transactions)
+        
+        # Get UID from the first row
+        with open(filepath_or_buffer, 'r') as f:
+            for line in f:
+                if line.startswith("User,"):
+                    uid = line.split(',')[2].strip()
+                    break  # Exit the loop once the UID is found
+        if uid is None:
+            raise Exception("UID not found in the file")
+            
+            
+        for idx, row in inTransactions.iterrows():
+            try:
+                transaction = Transaction(
+                    datetime=row['Timestamp'],
+                    asset=row['Asset'],
+                    amount= -row['Quantity Transacted'] if row['Transaction Type'] in cls.NegativeTransactionTypes else row['Quantity Transacted'],
+                    type=cls.TransactionTypesMap[row['Transaction Type']],
+                    exchange=cls.name,
+                    userId=uid,
+                    wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
+                    note=f"Transaction Type={row['Transaction Type']}" + ('' if row.isna()['Notes'] else (f", Notes={str(row['Notes'])}")),
+                    price_USD=row['Price at Transaction'],
+                    amount_USD=row['Subtotal']
+                )
+
+                # Manage all the transaction types that was not managable only with the TransactionTypesMap, and set to TBD.
+                if (transaction.type == TransactionType.TBD):
+                    raise KeyError(row['Operation'])
+                
+                transactions.append(deepcopy(transaction))
+                
+            except KeyError as e:
+                # If a KeyError is raised, it means that the transaction type is not supported by the loader. As many missing transaction type can be missing, we don't raise an exception here. We analyse all the transactions and raise an exception at the end if needed.
+                print(f"The transaction type {e} is not supported by the loader")
+                exceptions_occurred = True
+                continue
+
+            if (row['Transaction Type'] == 'Buy'):
+                # Buy transaction directly buy crypto from USD fiat money. The transaction is written in only one line, but is done in four steps:
+                # 1. Deposit of USD fiat on the account
+                # 2. Sell of USD fiat
+                # 3. Buy of crypto
+                # 4. Fees for the buy transaction
+                transactions.append(dataclasses.replace(transaction,
+                                                            asset='USD',
+                                                            amount=row['Total (inclusive of fees and/or spread)'],
+                                                            type=TransactionType.DEPOSIT,
+                                                            note=transaction.note + ', Step 1: Initial USD deposit for Buy transaction',
+                                                            price_USD=1,
+                                                            amount_USD=row['Total (inclusive of fees and/or spread)'])
+                )
+                transactions.append(dataclasses.replace(transaction,
+                                                            asset='USD',
+                                                            amount=-row['Subtotal'],
+                                                            type=TransactionType.SPOT_TRADE,
+                                                            note=transaction.note + ', Step 2: Sell USD for Buy transaction',
+                                                            price_USD=1,
+                                                            amount_USD=row['Subtotal'])
+                )
+                transactions[-3].note = transactions[-3].note + ', Step 3: Buy crypto for Buy transaction'
+
+                transactions.append(dataclasses.replace(transaction,
+                                                            asset='USD',
+                                                            amount=-row['Fees and/or Spread'],
+                                                            type=TransactionType.FEE,
+                                                            note=transaction.note + ', Step 4: Fees for Buy transaction',
+                                                            price_USD=1,
+                                                            amount_USD=row['Fees and/or Spread'])
+                )
+            elif (row['Transaction Type'] == 'Convert'):
+                # Convert transaction convert crypto from one to another. The transaction is written in only one line, but is done in three steps:
+                # 1. Sell of crypto
+                # 2. Buy of crypto
+                # 3. Fees for the convert transaction
+                fee_by_asset_currency = row['Fees and/or Spread'] / row['Price at Transaction'] # calculate the fees in the asset currency and not USD
+                bought_asset_name = row['Notes'].split()[-1]
+                bought_asset_amount = row['Notes'].split()[-2]
+                
+                transactions[-1].amount = transactions[-1].amount + fee_by_asset_currency # remove the fees from the sold amount of the sell transaction
+                transactions[-1].note = transactions[-1].note + ', Step 1: Sell crypto for Convert transaction'
+                
+                transactions.append(dataclasses.replace(transaction,
+                                                            asset=bought_asset_name,
+                                                            amount=bought_asset_amount,
+                                                            type=TransactionType.SPOT_TRADE,
+                                                            note=transaction.note + ', Step 2: Buy crypto for Convert transaction')
+                )
+                
+                transactions.append(dataclasses.replace(transaction,
+                                                            amount=-fee_by_asset_currency,
+                                                            type=TransactionType.FEE,
+                                                            note=transaction.note + ', Step 3: Fees for Convert transaction',
+                                                            price_USD=row['Price at Transaction'],
+                                                            amount_USD=row['Fees and/or Spread'])
+                )
+            
+            elif (row['Fees and/or Spread'] != 0):
+                raise Exception("Fees different from 0 for a transaction that is not a 'Buy' or 'Convert' transaction is not supported by the loader.")
+
+
+        transactions_df = pd.DataFrame(transactions)
+        
+        if exceptions_occurred:
+            raise Exception(
+                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
+
+        return transactions_df
+    
+    @staticmethod
+    def strip_currency(value):
+        """
+        Strips the dollar sign and converts the value to a float.
+        Handles missing or invalid data gracefully.
+        """
+        try:
+            return float(value.replace('$', '').strip())
+        except ValueError:
+            return None  # Return None for invalid or empty values    
+    
+    
 class ManualTransactionsLoader:
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
