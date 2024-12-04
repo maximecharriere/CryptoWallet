@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from .Transaction import Transaction, TransactionType, WalletType
 import dataclasses
 import os
+from copy import deepcopy
 
 
 class BinanceLoader:
@@ -50,8 +51,10 @@ class BinanceLoader:
         'Merchant Acquiring': TransactionType.SPEND
     }
     CryptoNameMap = {
-        'SHIB2': 'SHIB'
-    }
+        'SHIB2': 'SHIB',
+        'POL':'MATIC',
+        'BEAMX':'BEAM'
+        }
 
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
@@ -123,6 +126,7 @@ class BinanceLoader:
 
         transactions_df = pd.DataFrame(transactions)
         
+        # Replace the asset name in Binance by the real name
         transactions_df['asset'] = transactions_df['asset'].map(
             lambda s: cls.CryptoNameMap[s] if s in cls.CryptoNameMap else s)
 
@@ -187,7 +191,7 @@ class CoinbaseLoader:
                     wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
                     note=f"Transaction Type={row['Transaction Type']}" + ('' if row.isna()['Notes'] else (f", Notes={str(row['Notes'])}")),
                     price_USD=row['Price at Transaction'],
-                    amount_USD=row['Subtotal']
+                    amount_USD=-row['Subtotal'] if row['Transaction Type'] in cls.NegativeTransactionTypes else row['Subtotal']
                 )
 
                 # Manage all the transaction types that was not managable only with the TransactionTypesMap, and set to TBD.
@@ -222,7 +226,7 @@ class CoinbaseLoader:
                                                             type=TransactionType.SPOT_TRADE,
                                                             note=transaction.note + ', Step 2: Sell USD for Buy transaction',
                                                             price_USD=1,
-                                                            amount_USD=row['Subtotal'])
+                                                            amount_USD=-row['Subtotal'])
                 )
                 transactions[-3].note = transactions[-3].note + ', Step 3: Buy crypto for Buy transaction'
 
@@ -232,7 +236,7 @@ class CoinbaseLoader:
                                                             type=TransactionType.FEE,
                                                             note=transaction.note + ', Step 4: Fees for Buy transaction',
                                                             price_USD=1,
-                                                            amount_USD=row['Fees and/or Spread'])
+                                                            amount_USD=-row['Fees and/or Spread'])
                 )
             elif (row['Transaction Type'] == 'Convert'):
                 # Convert transaction convert crypto from one to another. The transaction is written in only one line, but is done in three steps:
@@ -250,7 +254,8 @@ class CoinbaseLoader:
                                                             asset=bought_asset_name,
                                                             amount=bought_asset_amount,
                                                             type=TransactionType.SPOT_TRADE,
-                                                            note=transaction.note + ', Step 2: Buy crypto for Convert transaction')
+                                                            note=transaction.note + ', Step 2: Buy crypto for Convert transaction',
+                                                            price_USD=row['Subtotal']/bought_asset_amount)
                 )
                 
                 transactions.append(dataclasses.replace(transaction,
@@ -258,7 +263,7 @@ class CoinbaseLoader:
                                                             type=TransactionType.FEE,
                                                             note=transaction.note + ', Step 3: Fees for Convert transaction',
                                                             price_USD=row['Price at Transaction'],
-                                                            amount_USD=row['Fees and/or Spread'])
+                                                            amount_USD=-row['Fees and/or Spread'])
                 )
             
             elif (row['Fees and/or Spread'] != 0):
@@ -313,7 +318,10 @@ class SwissborgLoader:
         'Payouts': TransactionType.STAKING_INTEREST
     }
     NegativeTransactionTypes = {'Withdrawal', 'Sell'}
-
+    CryptoNameMap = {
+        'DASHA': 'VVAIFU'
+        }
+    
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
         print(f"Loading transactions from {filepath_or_buffer} file")
@@ -336,17 +344,14 @@ class SwissborgLoader:
                     datetime=datetime.fromisoformat(
                         row['Time in UTC']).replace(tzinfo=timezone.utc),
                     asset=row['Currency'],
-                    amount=-
-                    row['Gross amount'] if row['Type'] in cls.NegativeTransactionTypes else row['Gross amount'],
+                    amount=-row['Gross amount'] if row['Type'] in cls.NegativeTransactionTypes else row['Gross amount'],
                     type=cls.TransactionTypesMap[row['Type']],
                     exchange=cls.name,
                     userId=userId,
                     wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
-                    note=f"Type={
-                        row['Type']}" + ('' if row.isna()['Note'] else (f", Note={str(row['Note'])}")),
+                    note=f"Type={row['Type']}" + ('' if row.isna()['Note'] else (f", Note={str(row['Note'])}")),
                     price_USD=row['Gross amount (USD)']/row['Gross amount'],
-                    amount_USD=- \
-                    row['Gross amount (USD)'] if row['Type'] in cls.NegativeTransactionTypes else row['Gross amount (USD)'],
+                    amount_USD=- row['Gross amount (USD)'] if row['Type'] in cls.NegativeTransactionTypes else row['Gross amount (USD)'],
                 ))
                 # If the transaction fee is not 0, add a new transaction for the fee
                 if (row['Fee'] != 0):
@@ -355,7 +360,7 @@ class SwissborgLoader:
                                                             type=TransactionType.FEE,
                                                             note=transactions[-1].note +
                                                             ', Fee',
-                                                            amount_USD=row['Fee (USD)']))
+                                                            amount_USD=-row['Fee (USD)']))
 
             except KeyError as e:
                 print(f"The transaction type {e} is not supported by the loader")
@@ -363,6 +368,10 @@ class SwissborgLoader:
 
         transactions_df = pd.DataFrame(transactions)
 
+        # Replace the asset name in Binance by the real name
+        transactions_df['asset'] = transactions_df['asset'].map(
+            lambda s: cls.CryptoNameMap[s] if s in cls.CryptoNameMap else s)
+        
         if exceptions_occurred:
             raise Exception(
                 "Exceptions occurred during the loading of the transactions. See the logs for more details.")
