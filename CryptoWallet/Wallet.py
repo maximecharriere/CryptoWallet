@@ -50,6 +50,8 @@ class Wallet(object):
         if self.databaseFilename is None:
             raise ValueError("No database filename provided. Set Wallet.databaseFilename.")
         
+        self.checkIntegrity()
+        
         self.backup()
             
         # After backup, save the transactions to the original file
@@ -78,7 +80,16 @@ class Wallet(object):
             shutil.copy2(self.databaseFilename, backup_path)
             print(f"Backup saved to {backup_path}")
 
-            
+    def checkIntegrity(self):
+        # Add missing USD price if needed
+        self.addMissingUsdPrice()
+        
+        # check that amount_USD = amount * price_USD, with a tolerance of 0.001
+        amount_USD = self.transactions['amount'] * self.transactions['price_USD'].fillna(0)
+        equal = np.isclose(amount_USD, self.transactions['amount_USD'], rtol=0, atol=0.001)
+        if not equal.all():
+            raise ValueError("Integrity check failed: amount_USD != amount * price_USD\n" + str(self.transactions[~equal]))
+        
     def saveCache(self):
         with open(self.cacheFilename, 'wb') as file:
             pickle.dump(self.cache, file)
@@ -123,6 +134,13 @@ class Wallet(object):
         TransactionType.SAVING_REDEMPTION,TransactionType.DEPOSIT, TransactionType.WITHDRAW, TransactionType.SPEND, TransactionType.INCOME, TransactionType.REDENOMINATION]))]
 
         return transactions.groupby(["asset"])['amount_USD'].sum().rename("cost_USD")
+    
+    def getTransactions(self, remove_datetime_timezone = False):
+        transactions = self.transactions.copy()
+        if remove_datetime_timezone:
+            transactions['datetime'] = transactions['datetime'].dt.tz_localize(None)
+        return transactions
+        
     
     def getAssetsList(self) -> pd.Series:
         return pd.Series(self.transactions['asset'].unique())
@@ -170,6 +188,18 @@ class Wallet(object):
         revenue.name = "potential_revenue_USD"
         return revenue
 
+    def getBuyPriceTot(self):
+        amount = self.getAmountTot()
+        cost = self.getCostTot()
+        # replace the amount of less than 0.0001 to NaN to avoid division by zero, negative and huge results due to really small amounts
+        amount = amount.where(amount >= 0.0001)
+        buyPrice = cost / amount
+        # remove negative buy prices (when profit is already realized)
+        buyPrice = buyPrice.where(buyPrice >= 0)
+        buyPrice.name = "buy_price_USD"
+        return buyPrice
+        
+        
     def getFeesTot(self):
         feesTot = self.transactions[(self.transactions['type'] == TransactionType.FEE)].groupby("asset")[['amount', 'amount_USD']].sum()
         feesTot.columns = ['fees_amount', 'fees_USD']
@@ -189,9 +219,10 @@ class Wallet(object):
         cost = self.getCostTot()
         value = self.getCurrentValueTot()
         revenue = self.getPotentialRevenueTot()
+        buyPrice = self.getBuyPriceTot()
         fees = self.getFeesTot()
         interest = self.getInterestsTot()
-        stats = pd.concat([amount, cost, value, revenue, fees, interest], axis=1).fillna(0)
+        stats = pd.concat([amount, cost, value, revenue, buyPrice, fees, interest], axis=1).fillna(0)
         return stats
 
     
@@ -204,6 +235,9 @@ class Wallet(object):
     def getAmountStaking(self):
         return self.transactions[(self.transactions['wallet'] == WalletType.STAKING)].groupby("asset")['amount'].sum()
     
+    
+        
+        
     def printFirstLastTransactionDatetime(self):
         from IPython.display import display
         # Group by 'exchange' and aggregate with min and max on 'datetime'
@@ -227,8 +261,9 @@ class Wallet(object):
         return amount_df
     
     def exportTradingView(self, filename):
+        ## 1st Script : Buy/Sell Orders ## 
         # Condition 1: Exclude certain assets
-        excluded_assets = ['BUSD', 'EUR', 'USD', 'USDT', 'FDUSD']
+        excluded_assets = ['BUSD', 'EUR', 'USD', 'USDT', 'FDUSD', 'CHF']
         condition1 = ~self.transactions['asset'].isin(excluded_assets)
 
         # Condition 2: Include only certain transaction types
@@ -240,15 +275,28 @@ class Wallet(object):
 
         # Apply all conditions to filter the DataFrame
         transactionsToPlot = self.transactions[condition1 & condition2 & condition3]
-
+        
+        ## 2nd Script : Buy Price Line ##
+        # Get the list of buy prices. Set nan values to 0 to avoid errors in the script
+        buy_prices = self.getBuyPriceTot().fillna(0)
+        
         # Write the filtered DataFrame to a txt file
         with open(filename, 'w') as file:
-            file.writelines(f"const int numLabels = {str(len(transactionsToPlot))}")
-            file.writelines(f"\narray<int> timestamps = array.from({', '.join(transactionsToPlot['datetime'].apply(lambda x: int(x.timestamp()*1000)).astype(str))})")
-            file.writelines(f"\narray<float> prices = array.from({', '.join(transactionsToPlot['price_USD'].astype(str))})")
-            # file.writelines(f"\narray<bool> buyOrders = array.from({', '.join((transactionsToPlot['amount']>0).astype(str).str.lower())})")
-            file.writelines('\narray<string> assets = array.from({})'.format(', '.join('"{}"'.format(item) for item in transactionsToPlot['asset'])))
-            file.writelines(f"\narray<float> amount = array.from({', '.join(transactionsToPlot['amount_USD'].astype(str))})")
+            file.writelines("#### 1st Script : Assets Buy Price ####\n")
+            file.writelines(f"\nconst int assets_count = {str(len(buy_prices))}")
+            file.writelines(f"\narray<string> assets = array.from({', '.join(f'"{item}"' for item in buy_prices.index)})")
+            file.writelines(f"\narray<float> assets_buyPrice = array.from({', '.join(buy_prices.astype(str))})")
+            
+            
+            file.writelines("\n\n\n#### 2nd Script : Buy/Sell Orders ####\n")
+            file.writelines(f"\nconst int orders_count = {str(len(transactionsToPlot))}")
+            file.writelines(f"\narray<int> orders_timestamp = array.from({', '.join(transactionsToPlot['datetime'].apply(lambda x: int(x.timestamp()*1000)).astype(str))})")
+            file.writelines(f"\narray<float> orders_price = array.from({', '.join(transactionsToPlot['price_USD'].astype(str))})")
+            file.writelines(f"\narray<string> orders_asset = array.from({', '.join(f'"{item}"' for item in transactionsToPlot['asset'])})")
+            file.writelines(f"\narray<float> orders_amount = array.from({', '.join(transactionsToPlot['amount_USD'].astype(str))})")
+            
+
+
 
     @staticmethod
     def mergeTransactionsInWindow(transactions, window): # window in seconds
@@ -356,7 +404,7 @@ class Wallet(object):
         # Select transactions with missing usd price
         missingUsdPrice = transactions[transactions['price_USD'].isna()].copy()  # Copy to avoid SettingWithCopyWarning
         # remove the unsuported assets by the api
-        missingUsdPrice = missingUsdPrice[~missingUsdPrice['asset'].isin(Wallet.CryptoCompareUnsupportedAssets)]
+        missingUsdPrice = missingUsdPrice[~missingUsdPrice['asset'].isin(Wallet.CryptoCompareUnsupportedHistoricalAssets)]
         
         print(f"Remaining missing price to request: {len(missingUsdPrice)}")
         
@@ -443,7 +491,7 @@ class Wallet(object):
         'IOTA': 'MIOTA',
         'MNT': 'MANTLE'
     }  
-    CryptoCompareUnsupportedAssets = ['1000PEPPER']
+    CryptoCompareUnsupportedHistoricalAssets = ['1000PEPPER', 'CHILLGUY', 'UOS']
     
     
     
