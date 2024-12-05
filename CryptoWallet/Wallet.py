@@ -25,7 +25,8 @@ class Wallet(object):
             self.transactions = pd.DataFrame()
         
         # Load cache from the pickle file "cache.pkl" if it exists
-        self.cacheFilename = "cache.pkl"
+        self.cacheFilename = ".CryptoWallet/cache.pkl"
+            
         self.cacheLifetime = 60*60 # 60 min in seconds
         if os.path.exists(self.cacheFilename):
           with open(self.cacheFilename, 'rb') as file:
@@ -91,6 +92,11 @@ class Wallet(object):
             raise ValueError("Integrity check failed: amount_USD != amount * price_USD\n" + str(self.transactions[~equal]))
         
     def saveCache(self):
+        # create the directory to store the cache
+        directory = os.path.dirname(self.cacheFilename)
+        if directory:  # Only create directories if there's actually a path component
+            os.makedirs(directory, exist_ok=True)
+            
         with open(self.cacheFilename, 'wb') as file:
             pickle.dump(self.cache, file)
             
