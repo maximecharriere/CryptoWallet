@@ -1,6 +1,5 @@
-data
 .venv
 .env
 **/__pycache__/**
 log
-cache.pkl
+.CryptoWallet
