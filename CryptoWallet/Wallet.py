@@ -288,18 +288,18 @@ class Wallet(object):
         
         # Write the filtered DataFrame to a txt file
         with open(filename, 'w') as file:
-            file.writelines("#### 1st Script : Assets Buy Price ####\n")
+            file.writelines("// #### 1st Script : Assets Buy Price ####")
             file.writelines(f"\nconst int assets_count = {str(len(buy_prices))}")
             file.writelines(f"\narray<string> assets = array.from({', '.join(f'"{item}"' for item in buy_prices.index)})")
             file.writelines(f"\narray<float> assets_buyPrice = array.from({', '.join(buy_prices.astype(str))})")
             
             
-            file.writelines("\n\n\n#### 2nd Script : Buy/Sell Orders ####\n")
+            file.writelines("\n\n\n// #### 2nd Script : Buy/Sell Orders ####")
             file.writelines(f"\nconst int orders_count = {str(len(transactionsToPlot))}")
             file.writelines(f"\narray<int> orders_timestamp = array.from({', '.join(transactionsToPlot['datetime'].apply(lambda x: int(x.timestamp()*1000)).astype(str))})")
             file.writelines(f"\narray<float> orders_price = array.from({', '.join(transactionsToPlot['price_USD'].astype(str))})")
             file.writelines(f"\narray<string> orders_asset = array.from({', '.join(f'"{item}"' for item in transactionsToPlot['asset'])})")
-            file.writelines(f"\narray<float> orders_amount = array.from({', '.join(transactionsToPlot['amount_USD'].astype(str))})")
+            file.writelines(f"\narray<float> orders_amount_USD = array.from({', '.join(transactionsToPlot['amount_USD'].astype(str))})")
             
 
 
