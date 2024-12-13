@@ -137,7 +137,7 @@ class Wallet(object):
     def getCostTot(self):
         transactions = self.transactions[(self.transactions['type'].isin([
         TransactionType.SPOT_TRADE, TransactionType.STAKING_PURCHASE, TransactionType.STAKING_REDEMPTION, TransactionType.SAVING_PURCHASE, 
-        TransactionType.SAVING_REDEMPTION,TransactionType.DEPOSIT, TransactionType.WITHDRAW, TransactionType.SPEND, TransactionType.INCOME, TransactionType.REDENOMINATION]))]
+        TransactionType.SAVING_REDEMPTION,TransactionType.DEPOSIT, TransactionType.WITHDRAW, TransactionType.SPEND, TransactionType.INCOME, TransactionType.REDENOMINATION, TransactionType.ACCOUNT_TRANSFER]))]
 
         return transactions.groupby(["asset"])['amount_USD'].sum().rename("cost_USD")
     
@@ -241,7 +241,8 @@ class Wallet(object):
     def getAmountStaking(self):
         return self.transactions[(self.transactions['wallet'] == WalletType.STAKING)].groupby("asset")['amount'].sum()
     
-    
+    def getAmountFunding(self):
+        return self.transactions[(self.transactions['wallet'] == WalletType.FUNDING)].groupby("asset")['amount'].sum()
         
         
     def printFirstLastTransactionDatetime(self):
@@ -293,8 +294,7 @@ class Wallet(object):
             file.writelines(f"\narray<string> assets = array.from({', '.join(f'"{item}"' for item in buy_prices.index)})")
             file.writelines(f"\narray<float> assets_buyPrice = array.from({', '.join(buy_prices.astype(str))})")
             
-            
-            file.writelines("\n\n\n// #### 2nd Script : Buy/Sell Orders ####")
+            file.writelines("\n\n// #### 2nd Script : Buy/Sell Orders ####")
             file.writelines(f"\nconst int orders_count = {str(len(transactionsToPlot))}")
             file.writelines(f"\narray<int> orders_timestamp = array.from({', '.join(transactionsToPlot['datetime'].apply(lambda x: int(x.timestamp()*1000)).astype(str))})")
             file.writelines(f"\narray<float> orders_price = array.from({', '.join(transactionsToPlot['price_USD'].astype(str))})")

@@ -20,6 +20,7 @@ class TransactionType(MyEnum):
     SAVING_PURCHASE = "Saving purchase"
     SAVING_REDEMPTION = "Saving redemption"
     SAVING_INTEREST = "Saving interest"
+    ACCOUNT_TRANSFER = "Account transfer"
     DISTRIBUTION = "Distribution"
     DEPOSIT = "Deposit"
     WITHDRAW = "Withdraw"

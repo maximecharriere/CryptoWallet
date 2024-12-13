@@ -48,7 +48,8 @@ class BinanceLoader:
         'Asset Recovery': TransactionType.REDENOMINATION,
         'Crypto Box': TransactionType.DISTRIBUTION,
         'Binance Convert': TransactionType.SPOT_TRADE,
-        'Merchant Acquiring': TransactionType.SPEND
+        'Merchant Acquiring': TransactionType.SPEND,
+        'Transfer Between Main and Funding Wallet': TransactionType.ACCOUNT_TRANSFER,
     }
     CryptoNameMap = {
         'SHIB2': 'SHIB',
@@ -68,16 +69,14 @@ class BinanceLoader:
         for idx, row in inTransactions.iterrows():
             try:
                 transactions.append(Transaction(
-                    datetime=datetime.fromisoformat(
-                        row['UTC_Time']).replace(tzinfo=timezone.utc),
+                    datetime=datetime.fromisoformat(row['UTC_Time']).replace(tzinfo=timezone.utc),
                     asset=row['Coin'],
                     amount=row['Change'],
                     type=cls.TransactionTypesMap[row['Operation']],
                     exchange=cls.name,
                     userId=str(row['User_ID']),
-                    wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
-                    note=f"Operation={
-                        row['Operation']}" + ('' if row.isna()['Remark'] else (f", Remark={str(row['Remark'])}"))
+                    wallet=WalletType(row['Account']),
+                    note=f"Operation={row['Operation']}" + ('' if row.isna()['Remark'] else (f", Remark={str(row['Remark'])}"))
                 ))
 
                 # Manage all the transaction types that was not managable only with the TransactionTypesMap, and set to TBD.
