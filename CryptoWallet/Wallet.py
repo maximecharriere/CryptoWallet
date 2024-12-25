@@ -268,7 +268,14 @@ class Wallet(object):
         return amount_df
     
     def exportTradingView(self, filename):
-        ## 1st Script : Buy/Sell Orders ## 
+
+        ## 1st Script : Buy Data ##
+        # Get the list of buy prices. Set nan values to 0 to avoid errors in the script
+        buy_prices = self.getBuyPriceTot().fillna(0)
+        # Get the total amount of each asset
+        amount = self.getAmountTot().fillna(0)
+        
+        ## 2nd Script : Buy/Sell Orders ## 
         # Condition 1: Exclude certain assets
         excluded_assets = ['BUSD', 'EUR', 'USD', 'USDT', 'FDUSD', 'CHF']
         condition1 = ~self.transactions['asset'].isin(excluded_assets)
@@ -282,17 +289,16 @@ class Wallet(object):
 
         # Apply all conditions to filter the DataFrame
         transactionsToPlot = self.transactions[condition1 & condition2 & condition3]
-        
-        ## 2nd Script : Buy Price Line ##
-        # Get the list of buy prices. Set nan values to 0 to avoid errors in the script
-        buy_prices = self.getBuyPriceTot().fillna(0)
+               
+
         
         # Write the filtered DataFrame to a txt file
         with open(filename, 'w') as file:
-            file.writelines("// #### 1st Script : Assets Buy Price ####")
+            file.writelines("// #### 1st Script : Assets Data ####")
             file.writelines(f"\nconst int assets_count = {str(len(buy_prices))}")
             file.writelines(f"\narray<string> assets = array.from({', '.join(f'"{item}"' for item in buy_prices.index)})")
             file.writelines(f"\narray<float> assets_buyPrice = array.from({', '.join(buy_prices.astype(str))})")
+            file.writelines(f"\narray<float> assets_amount = array.from({', '.join(amount.astype(str))})")
             
             file.writelines("\n\n// #### 2nd Script : Buy/Sell Orders ####")
             file.writelines(f"\nconst int orders_count = {str(len(transactionsToPlot))}")
@@ -300,7 +306,8 @@ class Wallet(object):
             file.writelines(f"\narray<float> orders_price = array.from({', '.join(transactionsToPlot['price_USD'].astype(str))})")
             file.writelines(f"\narray<string> orders_asset = array.from({', '.join(f'"{item}"' for item in transactionsToPlot['asset'])})")
             file.writelines(f"\narray<float> orders_amount_USD = array.from({', '.join(transactionsToPlot['amount_USD'].astype(str))})")
-            
+           
+
 
 
 
@@ -497,7 +504,7 @@ class Wallet(object):
         'IOTA': 'MIOTA',
         'MNT': 'MANTLE'
     }  
-    CryptoCompareUnsupportedHistoricalAssets = ['1000PEPPER', 'CHILLGUY', 'UOS']
+    CryptoCompareUnsupportedHistoricalAssets = ['1000PEPPER', 'CHILLGUY', 'UOS', 'HYPE', 'SDM']
     
     
     

@@ -54,7 +54,8 @@ class BinanceLoader:
     CryptoNameMap = {
         'SHIB2': 'SHIB',
         'POL':'MATIC',
-        'BEAMX':'BEAM'
+        'BEAMX':'BEAM',
+        'RONIN' : 'RON'
         }
 
     @classmethod
