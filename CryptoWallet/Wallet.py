@@ -43,13 +43,17 @@ class Wallet(object):
             raise FileNotFoundError(f"File {filepath_or_buffer} not found")
         self.transactions = pd.read_csv(filepath_or_buffer, parse_dates=['datetime'], date_format='ISO8601', converters={
             'type' : lambda s: TransactionType[s],
-            'wallet' : lambda s: WalletType[s]
+            'wallet' : lambda s: WalletType[s],
+            'userId' : lambda s: str(s)
         })
         self.printFirstLastTransactionDatetime()
         
     def save(self):
         if self.databaseFilename is None:
             raise ValueError("No database filename provided. Set Wallet.databaseFilename.")
+        
+        # Add missing USD price if needed
+        self.addUsdData()
         
         self.checkIntegrity()
         
@@ -81,15 +85,22 @@ class Wallet(object):
             shutil.copy2(self.databaseFilename, backup_path)
             print(f"Backup saved to {backup_path}")
 
-    def checkIntegrity(self):
-        # Add missing USD price if needed
-        self.addMissingUsdPrice()
+    def checkIntegrity(self):        
+        # Check that datetime, asset, amount, type, exchange, userId, wallet are not null
+        required_columns = ['datetime', 'asset', 'amount', 'type', 'exchange', 'userId', 'wallet']
+        if self.transactions[required_columns].isnull().values.any():
+            raise ValueError("Integrity check failed: NaN values found in required columns.")
         
-        # check that amount_USD = amount * price_USD, with a tolerance of 0.001
-        amount_USD = self.transactions['amount'] * self.transactions['price_USD'].fillna(0)
-        equal = np.isclose(amount_USD, self.transactions['amount_USD'], rtol=0, atol=0.001)
+        # Check that their is no transaction type still set to TransactionType.TBD
+        if (self.transactions['type'] == TransactionType.TBD).any():
+            raise ValueError("Integrity check failed: Transaction type TBD found in some transactions.")
+        
+        # Check that amount_USD = amount * price_USD, with a tolerance of 0.001
+        amount_USD = self.transactions['amount'] * self.transactions['price_USD']
+        equal = np.isclose(amount_USD, self.transactions['amount_USD'], rtol=0, atol=0.001, equal_nan=True)
         if not equal.all():
             raise ValueError("Integrity check failed: amount_USD != amount * price_USD\n" + str(self.transactions[~equal]))
+        
         
     def saveCache(self):
         # create the directory to store the cache
@@ -100,7 +111,7 @@ class Wallet(object):
         with open(self.cacheFilename, 'wb') as file:
             pickle.dump(self.cache, file)
             
-    def addTransactions(self, transactions, mergeSimilar = True, removeExisting = True, addMissingUsd = True):
+    def addTransactions(self, transactions, mergeSimilar = True, removeExisting = True):
         if mergeSimilar:
             transactions = self.mergeTransactionsInWindow(transactions, window=15*60)
             
@@ -116,21 +127,11 @@ class Wallet(object):
                         if mask.any():
                             print(f"Removing {mask.sum()}/{len(group)} transactions from {exchange} {userId} already existing in the wallet.")
                         transactions = transactions.drop(group.index[mask])
-
-        if addMissingUsd:
-            if self.apiKey is None:
-                raise Exception("No API key provided, no USD values will be added")
-            transactions = self.requestApiMissingUsdPrice(transactions, self.apiKey)
             
         newDf = pd.concat([self.transactions, transactions], ignore_index=True)
         
         self.transactions = newDf.sort_values("datetime")         
- 
-    def addMissingUsdPrice(self):
-        if self.apiKey is None:
-            raise Exception("No API key provided, no USD values will be added")
-        self.transactions = self.requestApiMissingUsdPrice(self.transactions, self.apiKey)
-        
+                    
     def getAmountTot(self):
         return self.transactions.groupby("asset")['amount'].sum()
     
@@ -322,9 +323,9 @@ class Wallet(object):
             mask = (abs(time_diff) > window) | time_diff.isnull()
             groups = mask.cumsum().rename('group')
             agg_dict = {
-                'amount': 'sum',
-                'price_USD': 'mean',
-                'amount_USD': 'sum',
+                'amount': lambda x: x.sum(skipna=False),
+                'price_USD': lambda x: np.average(x, weights=transaction_group.loc[x.index, 'amount']),
+                'amount_USD': lambda x: x.sum(skipna=False),
                 'datetime': 'first'
             }
             return transaction_group.groupby(groups, sort=False, group_keys=False).agg(agg_dict)
@@ -411,9 +412,20 @@ class Wallet(object):
         
         return prices
 
+    def addUsdData(self):
+        self.transactions = self.addMissingUsdPrice(self.transactions, self.apiKey)
+        self.transactions = self.addMissingUsdAmount(self.transactions)
 
     @staticmethod
-    def requestApiMissingUsdPrice(transactions, apiKey):
+    def addMissingUsdAmount(transactions):
+        missingUsdAmount = transactions['amount_USD'].isna()
+        transactions.loc[missingUsdAmount, 'amount_USD'] = (transactions.loc[missingUsdAmount, 'amount'] * transactions.loc[missingUsdAmount, 'price_USD'])
+        return transactions
+    
+    @staticmethod
+    def addMissingUsdPrice(transactions, apiKey):
+        if apiKey is None:
+            raise Exception("No API key provided, no USD values will be added")
         # Select transactions with missing usd price
         missingUsdPrice = transactions[transactions['price_USD'].isna()].copy()  # Copy to avoid SettingWithCopyWarning
         # remove the unsuported assets by the api
@@ -430,8 +442,8 @@ class Wallet(object):
         # API setup
         api_url = 'https://min-api.cryptocompare.com/data/v2/histohour'
         nWorkers = 3
-        # apiCallLimitPerSecond = 50
-        
+        rate_limit_delay = 1.0 / 50  # 50 calls per second
+
         with FuturesSession(max_workers=nWorkers) as session:
             futures = []
              # Submit requests with row indices as metadata
@@ -450,6 +462,7 @@ class Wallet(object):
                 # Attach the index to each future so we know where to place the result
                 future.idx = idx
                 futures.append(future)
+                time.sleep(rate_limit_delay)  # Add delay to respect rate limit
             
             prices = {}
             failedReplies = {}
@@ -494,9 +507,6 @@ class Wallet(object):
                 # Update the transactions DataFrame with prices
                 price_series = pd.Series(prices)
                 transactions.loc[price_series.index, 'price_USD'] = price_series
-                transactions.loc[price_series.index, 'amount_USD'] = (
-                    transactions.loc[price_series.index, 'amount'] * transactions.loc[price_series.index, 'price_USD']
-                )
         
         return transactions
     
@@ -505,6 +515,6 @@ class Wallet(object):
         'MNT': 'MANTLE'
     }  
     CryptoCompareUnsupportedHistoricalAssets = ['1000PEPPER', 'CHILLGUY', 'UOS', 'HYPE', 'SDM']
-    
-    
-    
+
+
+

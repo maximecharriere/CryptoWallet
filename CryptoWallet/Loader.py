@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from datetime import datetime, timezone, timedelta
 from .Transaction import Transaction, TransactionType, WalletType
 import dataclasses
@@ -54,8 +55,7 @@ class BinanceLoader:
     CryptoNameMap = {
         'SHIB2': 'SHIB',
         'POL':'MATIC',
-        'BEAMX':'BEAM',
-        'RONIN' : 'RON'
+        'BEAMX':'BEAM'
         }
 
     @classmethod
@@ -136,6 +136,70 @@ class BinanceLoader:
 
         return transactions_df
 
+
+class LedgerLoader:
+    name = 'Ledger'
+    TransactionTypesMap = {
+        'IN': TransactionType.DEPOSIT,
+        'OUT': TransactionType.WITHDRAW
+    }
+    CryptoNameMap = {
+        'BTCB': 'BTC'
+        }
+    
+    @classmethod
+    def load(cls, filepath_or_buffer) -> pd.DataFrame:
+        print(f"Loading transactions from {filepath_or_buffer} file")
+        # Check that the file is a csv file
+        if (not filepath_or_buffer.endswith('.csv')):
+            raise Exception(f"The file {filepath_or_buffer} is not a csv file")
+        inTransactions = pd.read_csv(filepath_or_buffer)
+        transactions = []
+        exceptions_occurred = False
+        for idx, row in inTransactions.iterrows():
+            try:
+                new_transaction = Transaction(
+                    datetime=datetime.fromisoformat(row['Operation Date']).replace(tzinfo=timezone.utc),
+                    asset=row['Currency Ticker'],
+                    amount=row['Operation Amount'],
+                    type=cls.TransactionTypesMap[row['Operation Type']],
+                    exchange=cls.name,
+                    userId=str(row['Account Name']) + ' - ' + str(row['Account xpub']),
+                    wallet=WalletType.FUNDING,
+                    note=f"Operation Hash={row['Operation Hash']}"
+                )
+
+                # Manage all the transaction types that was not managable only with the TransactionTypesMap, and set to TBD.
+                if (new_transaction.type == TransactionType.TBD):
+                        raise KeyError(row['Operation'])
+                
+                transactions.append(new_transaction)
+                
+                # If the transaction fee is not 0, add a new transaction for the fee
+                if ((row['Operation Fees'] != 0) & (new_transaction.type == TransactionType.WITHDRAW)):
+                    transactions.append(dataclasses.replace(new_transaction,
+                                                            amount=-row['Operation Fees'],
+                                                            type=TransactionType.FEE,
+                                                            note=new_transaction.note +', Fee'))
+                    
+            except KeyError as e:
+                # If a KeyError is raised, it means that the transaction type is not supported by the loader. As many missing transaction type can be missing, we don't raise an exception here. We analyse all the transactions and raise an exception at the end if needed.
+                print(f"The transaction type {e} is not supported by the loader")
+                exceptions_occurred = True
+                continue
+
+        transactions_df = pd.DataFrame(transactions)
+
+        # Replace the asset name in Ledger by the real name
+        transactions_df['asset'] = transactions_df['asset'].map(
+            lambda s: cls.CryptoNameMap[s] if s in cls.CryptoNameMap else s)
+        
+        if exceptions_occurred:
+            raise Exception(
+                "Exceptions occurred during the loading of the transactions. See the logs for more details.")
+
+        return transactions_df
+    
 
 class CoinbaseLoader:
     name = 'Coinbase'
@@ -351,7 +415,7 @@ class SwissborgLoader:
                     wallet=WalletType.SPOT,  # Default transaction are done with the Spot wallet
                     note=f"Type={row['Type']}" + ('' if row.isna()['Note'] else (f", Note={str(row['Note'])}")),
                     price_USD=row['Gross amount (USD)']/row['Gross amount'],
-                    amount_USD=- row['Gross amount (USD)'] if row['Type'] in cls.NegativeTransactionTypes else row['Gross amount (USD)'],
+                    amount_USD=- row['Gross amount (USD)'] if row['Type'] in cls.NegativeTransactionTypes else row['Gross amount (USD)']
                 ))
                 # If the transaction fee is not 0, add a new transaction for the fee
                 if (row['Fee'] != 0):
@@ -384,7 +448,7 @@ class KucoinLoader:
             'Deposit': TransactionType.DEPOSIT,
             'Withdraw': TransactionType.WITHDRAW,
             'Withdrawal': TransactionType.WITHDRAW,
-            'Transfer': TransactionType.TBD, # To Be Determined
+            'Transfer': TransactionType.ACCOUNT_TRANSFER,
             'Rewards': TransactionType.DISTRIBUTION,
             'KCS Bonus': TransactionType.DISTRIBUTION,
             'Fiat Deposit': TransactionType.DEPOSIT,
@@ -453,9 +517,7 @@ class KucoinLoader:
                     
                     if (transactions[-1].type == TransactionType.TBD):
                         # if the type is a transfer between two internal account, set the type to DEPOSIT or WITHDRAW
-                        if (row['Type'] == 'Transfer'):
-                            transactions[-1].type = cls.TransactionTypesMap[row['Side']]
-                        elif (row['Type'] == 'KuCoin Event'):
+                        if (row['Type'] == 'KuCoin Event'):
                             transactions[-1].type = cls.TransactionTypesMap[row['Side']]
                         else:
                             raise KeyError(row['Type'])
@@ -499,13 +561,17 @@ class BybitLoader:
     TransactionTypesMap = {
             'Deposit': TransactionType.DEPOSIT,
             'Withdrawal': TransactionType.WITHDRAW,
-            'Transfer from Unified Trading Account': TransactionType.DEPOSIT,
-            'Transfer to Unified Trading Account': TransactionType.WITHDRAW,
+            'Transfer from Unified Trading Account': TransactionType.ACCOUNT_TRANSFER,
+            'Transfer to Unified Trading Account': TransactionType.ACCOUNT_TRANSFER,
             'Launchpool Manual Withdrawal': TransactionType.SAVING_REDEMPTION,
             'Launchpool Yield': TransactionType.SAVING_INTEREST,
             'Launchpool Subscription': TransactionType.SAVING_PURCHASE,
-            'Earn': TransactionType.DISTRIBUTION
+            'Earn': TransactionType.DISTRIBUTION,
+            'TRADE' : TransactionType.SPOT_TRADE,
+            'TRANSFER_OUT' : TransactionType.ACCOUNT_TRANSFER,
+            'TRANSFER_IN' : TransactionType.ACCOUNT_TRANSFER,
         }
+    StableCoinsUSD = {'USDT', 'USDC', 'DAI', 'BUSD', 'USD', 'USDS', 'USDe', 'FDUSD', 'USDD', 'PYUSD', 'TUSD'}
     
     @classmethod
     def load(cls, folderpath) -> pd.DataFrame:
@@ -526,7 +592,7 @@ class BybitLoader:
                 transactions_funding, exceptions_funding = cls.load_funding(filepath)
                 transactions += transactions_funding
                 exceptions_occurred = exceptions_occurred or exceptions_funding
-            elif file.startswith("Bybit_unifiedAccount_spotTradeHistory"):
+            elif file.startswith("Bybit_AssetChangeDetails_uta"):
                 transactions_spot, exceptions_spot = cls.load_spot(filepath)
                 transactions += transactions_spot
                 exceptions_occurred = exceptions_occurred or exceptions_spot
@@ -583,13 +649,6 @@ class BybitLoader:
                                                         wallet=WalletType.SAVING,
                                                         amount=-transaction.amount,
                                                         note=transaction.note + ', Transaction not from Bybit'))
-
-            if (row['Description'] in {'Transfer from Unified Trading Account', 'Transfer to Unified Trading Account'}):
-                transactions.append(dataclasses.replace(transaction,
-                                                        wallet=WalletType.SPOT,
-                                                        amount=-transaction.amount,
-                                                        type=TransactionType.DEPOSIT if row['Description'] == 'Transfer to Unified Trading Account' else TransactionType.WITHDRAW,
-                                                        note=transaction.note + ', Transaction not from Bybit'))
                 
         return transactions, exceptions_occurred
 
@@ -597,7 +656,6 @@ class BybitLoader:
     def load_spot(cls, filepath):
         transactions = []
         exceptions_occurred = False
-        sign = {'BUY': 1, 'SELL': -1}
         inTransactions = pd.read_csv(filepath, skiprows=1)
         if inTransactions.empty:
             return transactions, exceptions_occurred
@@ -608,54 +666,40 @@ class BybitLoader:
             
         for idx, row in inTransactions.iterrows():
             try:
-                token1, token2 = cls.split_tokens(row['Spot Pairs'])
-                if token1 is None or token2 is None:
-                    raise KeyError(row['Spot Pairs'])
-                
+                # Try to get the price of the asset
+                # Set price_USD to the 'Filled Price' if the 'Currency' is not an USD stablecoin, but a stablecoin is present in the trading pair ('Contract' column)
+                # Otherwise, set price_USD to NaN.
+                price_USD = row['Filled Price'] if (row['Currency'] not in cls.StableCoinsUSD and pd.notna(row['Contract']) and any(coin in row['Contract'] for coin in cls.StableCoinsUSD)) else np.nan
+                    
                 transaction = Transaction(
-                    datetime=datetime.fromisoformat(str(row['Timestamp (UTC+0)'])).astimezone(timezone.utc),
-                    asset=token1,
-                    amount=row['Filled Quantity'] * sign[row['Direction']],
-                    type=TransactionType.SPOT_TRADE,
+                    datetime=datetime.fromisoformat(str(row['Time(UTC)'])).astimezone(timezone.utc),
+                    asset=row['Currency'],
+                    amount=row['Cash Flow'],
+                    type= cls.TransactionTypesMap[row['Type']],
                     exchange=cls.name,
                     userId=uid,
                     wallet=WalletType.SPOT,
-                    note=f"Spot Pairs={row['Spot Pairs']}, Direction={row['Direction']}"
+                    note=f"Contract={row['Contract']}, Direction={row['Direction']}",
+                    price_USD=price_USD,
+                    amount_USD=row['Cash Flow']*price_USD
                 )
                 transactions.append(transaction)
+                
+                # If the transaction fee is not 0, add a new transaction for the fee
+                if (row['Fee Paid'] != 0):
+                    transactions.append(dataclasses.replace(transaction,
+                                                        amount=row['Fee Paid'],
+                                                        type=TransactionType.FEE,
+                                                        note=transaction.note +', Fee',
+                                                        amount_USD=row['Fee Paid']*price_USD))
 
             except KeyError as e:
                 # If a KeyError is raised, it means that the transaction type is not supported by the loader. As many missing transaction type can be missing, we don't raise an exception here. We analyse all the transactions and raise an exception at the end if needed.
                 print(f"The key '{e}' is not supported by the loader")
                 exceptions_occurred = True
                 continue
-            
-            # Add a new transaction for the second token in the pair
-            transactions.append(dataclasses.replace(transaction,
-                                                        asset=token2,
-                                                        amount=row['Filled Value'] * sign[row['Direction']] * -1,
-                                                        note=transaction.note + ', Transaction not from Bybit'))
-            
-            # If the transaction fee is not 0, add a new transaction for the fee
-            if (row['Fees'] != 0):
-                transactions.append(dataclasses.replace(transaction,
-                                                        asset = token1 if row['Direction'] == 'BUY' else token2,
-                                                        amount=-row['Fees'],
-                                                        type=TransactionType.FEE,
-                                                        note=transaction.note +', Fee'))
+                        
+
 
         return transactions, exceptions_occurred
     
-    
-    @classmethod
-    def split_tokens(cls, spot_pair):
-        known_tokens = ['USDT', 'SOCIAL', 'EUR', 'BTC', 'ETH'] # TODO: Get the list dynamically from tokens in the funding account
-
-        for token in known_tokens:
-            if spot_pair.startswith(token):
-                # Token is at the beginning; the remainder is Token2
-                return token, spot_pair[len(token):]
-            elif spot_pair.endswith(token):
-                # Token is at the end; the beginning is Token1
-                return spot_pair[:-len(token)], token
-        return None, None  # If no match is found
