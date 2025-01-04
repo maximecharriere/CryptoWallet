@@ -52,11 +52,6 @@ class BinanceLoader:
         'Merchant Acquiring': TransactionType.SPEND,
         'Transfer Between Main and Funding Wallet': TransactionType.ACCOUNT_TRANSFER,
     }
-    CryptoNameMap = {
-        'SHIB2': 'SHIB',
-        'POL':'MATIC',
-        'BEAMX':'BEAM'
-        }
 
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
@@ -126,10 +121,6 @@ class BinanceLoader:
 
         transactions_df = pd.DataFrame(transactions)
         
-        # Replace the asset name in Binance by the real name
-        transactions_df['asset'] = transactions_df['asset'].map(
-            lambda s: cls.CryptoNameMap[s] if s in cls.CryptoNameMap else s)
-
         if exceptions_occurred:
             raise Exception(
                 "Exceptions occurred during the loading of the transactions. See the logs for more details.")
@@ -144,9 +135,6 @@ class LedgerLoader:
         'OUT': TransactionType.WITHDRAW,
         'NFT_IN': TransactionType.TBD
     }
-    CryptoNameMap = {
-        'BTCB': 'BTC'
-        }
     
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
@@ -194,10 +182,6 @@ class LedgerLoader:
                 continue
 
         transactions_df = pd.DataFrame(transactions)
-
-        # Replace the asset name in Ledger by the real name
-        transactions_df['asset'] = transactions_df['asset'].map(
-            lambda s: cls.CryptoNameMap[s] if s in cls.CryptoNameMap else s)
         
         if exceptions_occurred:
             raise Exception(
@@ -388,9 +372,6 @@ class SwissborgLoader:
         'Payouts': TransactionType.STAKING_INTEREST
     }
     NegativeTransactionTypes = {'Withdrawal', 'Sell'}
-    CryptoNameMap = {
-        'DASHA': 'VVAIFU'
-        }
     
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
@@ -437,10 +418,6 @@ class SwissborgLoader:
                 exceptions_occurred = True
 
         transactions_df = pd.DataFrame(transactions)
-
-        # Replace the asset name in Binance by the real name
-        transactions_df['asset'] = transactions_df['asset'].map(
-            lambda s: cls.CryptoNameMap[s] if s in cls.CryptoNameMap else s)
         
         if exceptions_occurred:
             raise Exception(

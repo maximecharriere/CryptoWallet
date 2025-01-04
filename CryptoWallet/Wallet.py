@@ -112,6 +112,9 @@ class Wallet(object):
             pickle.dump(self.cache, file)
             
     def addTransactions(self, transactions, mergeSimilar = True, removeExisting = True):
+        # Change crypto names to match the standard names
+        transactions['asset'] = transactions['asset'].map(lambda s: Wallet.CryptoNameMap[s] if s in Wallet.CryptoNameMap else s)
+                
         if mergeSimilar:
             transactions = self.mergeTransactionsInWindow(transactions, window=15*60)
             
@@ -132,8 +135,9 @@ class Wallet(object):
         
         self.transactions = newDf.sort_values("datetime")         
                     
-    def getAmountTot(self):
+    def getAmountTotByAsset(self):
         return self.transactions.groupby("asset")['amount'].sum()
+            
     
     def getCostTot(self):
         transactions = self.transactions[(self.transactions['type'].isin([
@@ -182,7 +186,7 @@ class Wallet(object):
       return prices
 
     def getCurrentValueTot(self):
-        amount = self.getAmountTot()
+        amount = self.getAmountTotByAsset()
         prices = self.getCurrentPrices()
         value = amount * prices
         value.name = "current_value_USD"
@@ -196,7 +200,7 @@ class Wallet(object):
         return revenue
 
     def getBuyPriceTot(self):
-        amount = self.getAmountTot()
+        amount = self.getAmountTotByAsset()
         cost = self.getCostTot()
         # replace the amount of less than 0.0001 to NaN to avoid division by zero, negative and huge results due to really small amounts
         amount = amount.where(amount >= 0.0001)
@@ -221,8 +225,8 @@ class Wallet(object):
         return interestsTot
     
     
-    def getStatsTot(self):
-        amount = self.getAmountTot()
+    def getCoinsStats(self):
+        amount = self.getAmountTotByAsset()
         cost = self.getCostTot()
         value = self.getCurrentValueTot()
         revenue = self.getPotentialRevenueTot()
@@ -232,6 +236,13 @@ class Wallet(object):
         stats = pd.concat([amount, cost, value, revenue, buyPrice, fees, interest], axis=1).fillna(0)
         return stats
 
+    def getSummary(self):
+        summary = pd.Series({
+            'total_holding_USD': self.getCurrentValueTot().drop(self.Fiats).sum(), 
+            'total_fiat_expenses_USD': self.getCurrentValueTot().loc[self.Fiats].sum(), 
+            'total_fees_USD': self.getFeesTot()['fees_USD'].sum(), 
+            'total_interests_USD': self.getInterestsTot()['interests_USD'].sum()})
+        return summary
     
     def getAmountSpot(self):
         return self.transactions[(self.transactions['wallet'] == WalletType.SPOT)].groupby("asset")['amount'].sum()
@@ -274,7 +285,7 @@ class Wallet(object):
         # Get the list of buy prices. Set nan values to 0 to avoid errors in the script
         buy_prices = self.getBuyPriceTot().fillna(0)
         # Get the total amount of each asset
-        amount = self.getAmountTot().fillna(0)
+        amount = self.getAmountTotByAsset().fillna(0)
         
         ## 2nd Script : Buy/Sell Orders ## 
         # Condition 1: Exclude certain assets
@@ -340,6 +351,12 @@ class Wallet(object):
     def requestApiCurrentPrices(assets :pd.Series, apiKey) -> pd.Series:
         # Rename assets to match CryptoCompare API
         assets = assets.replace(Wallet.CryptoCompareAssetMap)
+        
+        # remove the unsuported assets by the api
+        assets = assets[~assets.isin(Wallet.CryptoCompareUnsupportedCurrentPriceAssets)]
+        
+        if assets.empty:
+            return pd.Series()
 
         # Create batch of assets where the joinded length is less than 300 characters
         MAX_FSYMS_LENGH = 300
@@ -361,9 +378,9 @@ class Wallet(object):
         # Request prices for each batch of assets to th API
         prices = []
         for batch in assets_batches:
-            batch_prices = Wallet.requestApiCurrentPricesBatch(batch, apiKey)
+            batch_prices = Wallet.__requestApiCurrentPricesBatch(batch, apiKey)
             prices.append(batch_prices)
-        prices = pd.concat(prices)
+        prices = pd.concat(prices).squeeze()
         
         # Replace back the original asset names using the CryptoCompareAssetMap
         cryptoCompareAssetMap_inverted = {v: k for k, v in Wallet.CryptoCompareAssetMap.items()}
@@ -372,7 +389,7 @@ class Wallet(object):
         return prices
               
     @staticmethod
-    def requestApiCurrentPricesBatch(assetsBatch, apiKey):
+    def __requestApiCurrentPricesBatch(assetsBatch, apiKey):
         api_url = 'https://min-api.cryptocompare.com/data/pricemulti'
         params={
             'fsyms': ','.join(assetsBatch),
@@ -510,11 +527,20 @@ class Wallet(object):
         
         return transactions
     
+    CryptoNameMap = {
+        'SHIB2': 'SHIB',
+        'POL':'MATIC',
+        'BEAMX':'BEAM',
+        'BTCB': 'BTC',
+        'DASHA': 'VVAIFU'
+    }
     CryptoCompareAssetMap = {
         'IOTA': 'MIOTA',
         'MNT': 'MANTLE'
     }  
-    CryptoCompareUnsupportedHistoricalAssets = ['1000PEPPER', 'CHILLGUY', 'UOS', 'HYPE', 'SDM']
+    CryptoCompareUnsupportedHistoricalAssets = ['1000PEPPER', 'CHILLGUY', 'UOS', 'HYPE', 'SDM', 'GNET', 'XBG', 'BIO']
+    CryptoCompareUnsupportedCurrentPriceAssets = ['1000PEPPER', 'GNET', 'XBG', 'BIO']
+    Fiats = ['USD', 'EUR', 'CHF']
 
 
 
