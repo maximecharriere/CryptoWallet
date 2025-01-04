@@ -141,7 +141,8 @@ class LedgerLoader:
     name = 'Ledger'
     TransactionTypesMap = {
         'IN': TransactionType.DEPOSIT,
-        'OUT': TransactionType.WITHDRAW
+        'OUT': TransactionType.WITHDRAW,
+        'NFT_IN': TransactionType.TBD
     }
     CryptoNameMap = {
         'BTCB': 'BTC'
@@ -171,6 +172,10 @@ class LedgerLoader:
 
                 # Manage all the transaction types that was not managable only with the TransactionTypesMap, and set to TBD.
                 if (new_transaction.type == TransactionType.TBD):
+                    if (row['Operation Type'] == 'NFT_IN'):
+                        # NFT_IN is a transaction type that is not supported by the loader. Go to the next transaction.
+                        continue
+                    else:
                         raise KeyError(row['Operation'])
                 
                 transactions.append(new_transaction)
@@ -214,6 +219,7 @@ class CoinbaseLoader:
 
     @classmethod
     def load(cls, filepath_or_buffer) -> pd.DataFrame:
+        raise DeprecationWarning("CoinbaseLoader is not supported anymore. Use the ManualTransactionsLoader instead.")
         print(f"Loading transactions from {filepath_or_buffer} file")
         # Check that the file is a csv file
         if (not filepath_or_buffer.endswith('.csv')):
@@ -309,7 +315,7 @@ class CoinbaseLoader:
                 # 3. Fees for the convert transaction
                 fee_by_asset_currency = row['Fees and/or Spread'] / row['Price at Transaction'] # calculate the fees in the asset currency and not USD
                 bought_asset_name = row['Notes'].split()[-1]
-                bought_asset_amount = row['Notes'].split()[-2]
+                bought_asset_amount = float(row['Notes'].split()[-2])
                 
                 transactions[-1].amount = transactions[-1].amount + fee_by_asset_currency # remove the fees from the sold amount of the sell transaction
                 transactions[-1].note = transactions[-1].note + ', Step 1: Sell crypto for Convert transaction'
@@ -581,6 +587,8 @@ class BybitLoader:
             raise Exception(f"The path {folderpath} is not a folder. Bybit store multiple CSV files in a folder")
 
         csv_files = [file for file in os.listdir(folderpath) if file.endswith('.csv')]
+        if not csv_files:
+            raise Exception(f"No CSV files found in the folder {folderpath}")
         transactions = []
         exceptions_occurred = False
         for file in csv_files:
