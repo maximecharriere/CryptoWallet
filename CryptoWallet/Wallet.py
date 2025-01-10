@@ -237,12 +237,19 @@ class Wallet(object):
         return stats
 
     def getSummary(self):
-        summary = pd.Series({
-            'total_holding_USD': self.getCurrentValueTot().drop(self.Fiats).sum(), 
-            'total_fiat_expenses_USD': self.getCurrentValueTot().loc[self.Fiats].sum(), 
-            'total_fees_USD': self.getFeesTot()['fees_USD'].sum(), 
-            'total_interests_USD': self.getInterestsTot()['interests_USD'].sum()})
-        return summary
+        total_holding_USD = self.getCurrentValueTot().drop(self.Fiats).sum()
+        total_fiat_expenses_USD = self.getCurrentValueTot().loc[self.Fiats].sum()
+        profit_USD = total_holding_USD + total_fiat_expenses_USD
+        total_fees_USD = self.getFeesTot()['fees_USD'].sum()
+        total_interests_USD = self.getInterestsTot()['interests_USD'].sum()
+            
+        return pd.Series({
+            'total_holding_USD': total_holding_USD,
+            'total_fiat_expenses_USD': total_fiat_expenses_USD,
+            'profit_USD': profit_USD,
+            'total_fees_USD': total_fees_USD,
+            'total_interests_USD': total_interests_USD
+        })
     
     def getAmountSpot(self):
         return self.transactions[(self.transactions['wallet'] == WalletType.SPOT)].groupby("asset")['amount'].sum()
