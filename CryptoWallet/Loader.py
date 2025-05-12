@@ -146,6 +146,11 @@ class LedgerLoader:
         transactions = []
         exceptions_occurred = False
         for idx, row in inTransactions.iterrows():
+            if (row['Status'] != 'Confirmed'):
+                if (row['Status'] != 'Failed'):
+                    raise Exception(
+                        f"The transaction status '{row['Status']}' is unknown. Only 'Confirmed' and 'Failed' are supported by the loader.")
+                continue  # Skip the transaction if it is not confirmed
             try:
                 new_transaction = Transaction(
                     datetime=datetime.fromisoformat(row['Operation Date']).replace(tzinfo=timezone.utc),
@@ -157,7 +162,9 @@ class LedgerLoader:
                     wallet=WalletType.FUNDING,
                     note=f"Operation Hash={row['Operation Hash']}"
                 )
-
+                # If the transaction type is OUT, the amount is negative
+                if (new_transaction.type == TransactionType.WITHDRAW):
+                    new_transaction.amount = -new_transaction.amount
                 # Manage all the transaction types that was not managable only with the TransactionTypesMap, and set to TBD.
                 if (new_transaction.type == TransactionType.TBD):
                     if (row['Operation Type'] == 'NFT_IN'):
