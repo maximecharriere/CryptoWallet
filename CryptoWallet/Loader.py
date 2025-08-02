@@ -133,7 +133,8 @@ class LedgerLoader:
     TransactionTypesMap = {
         'IN': TransactionType.DEPOSIT,
         'OUT': TransactionType.WITHDRAW,
-        'NFT_IN': TransactionType.TBD
+        'NFT_IN': TransactionType.TBD,
+        'FEES': TransactionType.FEE
     }
     
     @classmethod
@@ -163,7 +164,7 @@ class LedgerLoader:
                     note=f"Operation Hash={row['Operation Hash']}"
                 )
                 # If the transaction type is OUT, the amount is negative
-                if (new_transaction.type == TransactionType.WITHDRAW):
+                if (new_transaction.type in {TransactionType.WITHDRAW, TransactionType.FEE}):
                     new_transaction.amount = -new_transaction.amount
                 # Manage all the transaction types that was not managable only with the TransactionTypesMap, and set to TBD.
                 if (new_transaction.type == TransactionType.TBD):
