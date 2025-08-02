@@ -557,10 +557,12 @@ class BybitLoader:
             'Launchpool Manual Withdrawal': TransactionType.SAVING_REDEMPTION,
             'Launchpool Yield': TransactionType.SAVING_INTEREST,
             'Launchpool Subscription': TransactionType.SAVING_PURCHASE,
+            'Flexible Savings Interest Distribution' : TransactionType.SAVING_INTEREST,
             'Earn': TransactionType.DISTRIBUTION,
             'TRADE' : TransactionType.SPOT_TRADE,
             'TRANSFER_OUT' : TransactionType.ACCOUNT_TRANSFER,
             'TRANSFER_IN' : TransactionType.ACCOUNT_TRANSFER,
+            np.nan : TransactionType.TBD  # To Be Determined
         }
     StableCoinsUSD = {'USDT', 'USDC', 'DAI', 'BUSD', 'USD', 'USDS', 'USDe', 'FDUSD', 'USDD', 'PYUSD', 'TUSD'}
     
@@ -627,7 +629,14 @@ class BybitLoader:
                 )
                 
                 if (transaction.type == TransactionType.TBD):
-                    raise KeyError(row['Description'])
+                    if row['Type'] == 'Earn':
+                        if row['QTY'] < 0:
+                            transaction.type = TransactionType.SAVING_PURCHASE
+                            transaction.note += ', Move to SAVING wallet'
+                        else: 
+                            raise KeyError(row['Description'])
+                    else:
+                        raise KeyError(row['Description'])
                 
                 transactions.append(transaction)
                 
@@ -642,6 +651,7 @@ class BybitLoader:
                                                         wallet=WalletType.SAVING,
                                                         amount=-transaction.amount,
                                                         note=transaction.note + ', Transaction not from Bybit'))
+                                    
                 
         return transactions, exceptions_occurred
 
