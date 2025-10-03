@@ -328,9 +328,13 @@ class Wallet(object):
 
         # Condition 3: Exclude transactions with amount_USD between -10 and 10
         condition3 = ~self.transactions['amount_USD'].between(-10, 10)
-
+        
+        # Condition 4: Exclude transactions with price_USD, or amount_USD equal to NaN
+        condition4 = ~self.transactions['price_USD'].isna() & ~self.transactions['amount_USD'].isna()
+        if condition4.sum() < len(self.transactions):
+            print(f"Warning: {len(self.transactions) - condition4.sum()} transactions with NaN price_USD or amount_USD will be excluded from the TradingView export. Transactions:\n{self.transactions[~condition4]}")
         # Apply all conditions to filter the DataFrame
-        transactionsToPlot = self.transactions[condition1 & condition2 & condition3]
+        transactionsToPlot = self.transactions[condition1 & condition2 & condition3 & condition4].copy()
                
 
         
@@ -365,7 +369,7 @@ class Wallet(object):
             groups = mask.cumsum().rename('group')
             agg_dict = {
                 'amount': lambda x: x.sum(skipna=False),
-                'price_USD': lambda x: np.average(x, weights=transaction_group.loc[x.index, 'amount']),
+                'price_USD': lambda x: np.average(x),#, weights=transaction_group.loc[x.index, 'amount']),
                 'amount_USD': lambda x: x.sum(skipna=False),
                 'datetime': 'first'
             }

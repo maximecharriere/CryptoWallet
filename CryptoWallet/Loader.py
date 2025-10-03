@@ -35,6 +35,7 @@ class BinanceLoader:
         'ETH 2.0 Staking': TransactionType.STAKING_PURCHASE,
         'ETH 2.0 Staking Rewards': TransactionType.STAKING_INTEREST,
         'ETH 2.0 Staking Withdrawals': TransactionType.STAKING_REDEMPTION,
+        'WBETH2.0 - Redemption Unfreeze and Transfer' : TransactionType.TBD,
         'Launchpool Subscription/Redemption': TransactionType.TBD, # To Be Determined
         'Launchpool Airdrop': TransactionType.DISTRIBUTION,
         'Distribution': TransactionType.DISTRIBUTION,
@@ -79,6 +80,10 @@ class BinanceLoader:
                 if (transactions[-1].type == TransactionType.TBD):
                     if (row['Operation'] == 'Launchpool Subscription/Redemption'):
                         transactions[-1].type = TransactionType.SAVING_PURCHASE if row['Change'] < 0 else TransactionType.SAVING_REDEMPTION
+                    elif (row['Operation'] == 'WBETH2.0 - Redemption Unfreeze and Transfer'):
+                        # This operation is the unfreezing of the ETH 2.0 staking. It is not a transaction that should be recorded, as the staking purchase was already recorded when the ETH were staked.
+                        transactions.pop()  # Remove the last transaction added
+                        continue
                     else:
                         raise KeyError(row['Operation'])
             except KeyError as e:
@@ -176,12 +181,6 @@ class LedgerLoader:
                 
                 transactions.append(new_transaction)
                 
-                # If the transaction fee is not 0, add a new transaction for the fee
-                if ((row['Operation Fees'] != 0) & (new_transaction.type == TransactionType.WITHDRAW)):
-                    transactions.append(dataclasses.replace(new_transaction,
-                                                            amount=-row['Operation Fees'],
-                                                            type=TransactionType.FEE,
-                                                            note=new_transaction.note +', Fee'))
                     
             except KeyError as e:
                 # If a KeyError is raised, it means that the transaction type is not supported by the loader. As many missing transaction type can be missing, we don't raise an exception here. We analyse all the transactions and raise an exception at the end if needed.
@@ -558,6 +557,7 @@ class BybitLoader:
             'Launchpool Yield': TransactionType.SAVING_INTEREST,
             'Launchpool Subscription': TransactionType.SAVING_PURCHASE,
             'Flexible Savings Interest Distribution' : TransactionType.SAVING_INTEREST,
+            'Flexible Savings Principal Redemption' : TransactionType.SAVING_REDEMPTION,
             'Earn': TransactionType.DISTRIBUTION,
             'TRADE' : TransactionType.SPOT_TRADE,
             'TRANSFER_OUT' : TransactionType.ACCOUNT_TRANSFER,
